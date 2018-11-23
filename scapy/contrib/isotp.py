@@ -6,6 +6,14 @@
 # Copyright (C) Enrico Pozzobon <enricopozzobon@gmail.com>
 # This program is published under a GPLv2 license
 
+# scapy.contrib.description = ISO-TP (ISO 15765-2)
+# scapy.contrib.status = loads
+
+"""
+ISOTPSocket.
+"""
+
+
 import ctypes
 from ctypes.util import find_library
 import struct
@@ -14,7 +22,10 @@ import time
 from threading import Thread, Event, RLock
 
 from scapy.packet import Packet
-from scapy.fields import StrField
+from scapy.fields import BitField, FlagsField, StrLenField, \
+    ThreeBytesField, XBitField, ConditionalField, \
+    BitEnumField, ByteField, XByteField, BitFieldLenField, StrField
+from scapy.compat import chb, orb
 from scapy.layers.can import CAN
 import scapy.modules.six as six
 from scapy.error import Scapy_Exception, warning, log_loading
@@ -22,8 +33,9 @@ from scapy.supersocket import SuperSocket
 from scapy.config import conf
 from scapy.consts import LINUX
 
-__all__ = ["ISOTP", "ISOTPSniffer", "ISOTPSoftSocket", "ISOTPSocket",
-           "ISOTPSocketImplementation", "ISOTPMessageBuilder"]
+__all__ = ["ISOTP", "ISOTPHeader", "ISOTPHeaderEA", "ISOTP_SF", "ISOTP_FF",
+           "ISOTP_CF", "ISOTP_FC", "ISOTPSniffer", "ISOTPSoftSocket",
+           "ISOTPSocket", "ISOTPSocketImplementation", "ISOTPMessageBuilder"]
 
 USE_CAN_ISOTP_KERNEL_MODULE = False
 if six.PY3 and LINUX:
@@ -166,6 +178,107 @@ class ISOTP(Packet):
                     "provided CAN frames, returning the first one.")
 
         return results[0]
+
+
+class ISOTPHeader(CAN):
+    name = 'ISOTPHeader'
+    fields_desc = [
+        FlagsField('flags', 0, 3, ['error',
+                                   'remote_transmission_request',
+                                   'extended']),
+        XBitField('identifier', 0, 29),
+        ByteField('length', None),
+        ThreeBytesField('reserved', 0),
+    ]
+
+    def extract_padding(self, p):
+        return p, None
+
+    def post_build(self, p, pay):
+        """
+        This will set the ByteField 'length' to the correct value.
+        """
+        if self.length is None:
+            p = p[:4] + chb(len(pay)) + p[5:]
+        return p + pay
+
+    def guess_payload_class(self, payload):
+        """
+        ISOTP encodes the frame type in the first nibble of a frame.
+        """
+        t = (orb(payload[0]) & 0xf0) >> 4
+        if t == 0:
+            return ISOTP_SF
+        elif t == 1:
+            return ISOTP_FF
+        elif t == 2:
+            return ISOTP_CF
+        else:
+            return ISOTP_FC
+
+
+class ISOTPHeaderEA(ISOTPHeader):
+    name = 'ISOTPHeaderExtendedAddress'
+    fields_desc = ISOTPHeader.fields_desc + [
+        XByteField('extended_address', 0),
+    ]
+
+    def post_build(self, p, pay):
+        """
+        This will set the ByteField 'length' to the correct value.
+        'chb(len(pay) + 1)' is required, because the field 'extended_address'
+        is counted as payload on the CAN layer
+        """
+        if self.length is None:
+            p = p[:4] + chb(len(pay) + 1) + p[5:]
+        return p + pay
+
+
+ISOTP_TYPE = {0: 'single',
+              1: 'first',
+              2: 'consecutive',
+              3: 'flow_control'}
+
+
+class ISOTP_SF(Packet):
+    name = 'ISOTPSingleFrame'
+    fields_desc = [
+        BitEnumField('type', 0, 4, ISOTP_TYPE),
+        BitFieldLenField('message_size', None, 4, length_of='data'),
+        StrLenField('data', '', length_from=lambda pkt: pkt.message_size)
+    ]
+
+
+class ISOTP_FF(Packet):
+    name = 'ISOTPFirstFrame'
+    fields_desc = [
+        BitEnumField('type', 1, 4, ISOTP_TYPE),
+        BitField('message_size', 0, 12),
+        ConditionalField(BitField('extended_message_size', 0, 32),
+                         lambda pkt: pkt.message_size == 0),
+        StrField('data', '', fmt="B")
+    ]
+
+
+class ISOTP_CF(Packet):
+    name = 'ISOTPConsecutiveFrame'
+    fields_desc = [
+        BitEnumField('type', 2, 4, ISOTP_TYPE),
+        BitField('index', 0, 4),
+        StrField('data', '', fmt="B")
+    ]
+
+
+class ISOTP_FC(Packet):
+    name = 'ISOTPFlowControlFrame'
+    fields_desc = [
+        BitEnumField('type', 3, 4, ISOTP_TYPE),
+        BitEnumField('fc_flag', 0, 4, {0: 'continue',
+                                       1: 'wait',
+                                       2: 'abort'}),
+        ByteField('block_size', 0),
+        ByteField('separation_time', 0),
+    ]
 
 
 class ISOTPMessageBuilder:
@@ -400,6 +513,7 @@ class ISOTPSoftSocket(SuperSocket):
                  timeout=1,
                  rx_block_size=0,
                  rx_separation_time_min=0,
+                 padding=False,
                  basecls=ISOTP):
         """
         Initialize an ISOTPSoftSocket using the provided underlying can socket
@@ -417,6 +531,9 @@ class ISOTPSoftSocket(SuperSocket):
         :param rx_block_size: block size sent in Flow Control ISOTP frames
         :param rx_separation_time_min: minimum desired separation time sent in
                                        Flow Control ISOTP frames
+        :param padding: If True, pads sending packets with 0x00 which not
+                        count to the payload.
+                        Does not affect receiving packets.
         :param basecls: base class of the packets emitted by this socket
         """
 
@@ -434,6 +551,8 @@ class ISOTPSoftSocket(SuperSocket):
         self.filter_warning_emitted = False
 
         def can_send(load):
+            if padding:
+                load += bytearray(CAN_MAX_DLEN - len(load))
             can_socket.send(CAN(identifier=sid, data=load))
 
         def can_on_recv(p):
@@ -444,15 +563,17 @@ class ISOTPSoftSocket(SuperSocket):
                             "CAN socket" % did)
                     self.filter_warning_emitted = True
             else:
-                self.impl.on_recv(p)
+                self.ins.on_recv(p)
 
-        self.impl = ISOTPSocketImplementation(
+        self.ins = ISOTPSocketImplementation(
             can_send,
             extended_addr=extended_addr,
             extended_rx_addr=extended_rx_addr,
             rx_block_size=rx_block_size,
             rx_separation_time_min=rx_separation_time_min
         )
+
+        self.outs = self.ins
 
         self.can_socket = can_socket
         self.rx_thread = CANReceiverThread(can_socket, can_on_recv)
@@ -480,6 +601,8 @@ class ISOTPSoftSocket(SuperSocket):
         """Close the socket and stop the receiving thread"""
         self.can_socket.close()
         self.rx_thread.stop()
+        self.outs = None
+        self.ins = None
         SuperSocket.close(self)
 
     def begin_send(self, p):
@@ -490,24 +613,14 @@ class ISOTPSoftSocket(SuperSocket):
         if hasattr(p, "sent_time"):
             p.sent_time = time.time()
 
-        return self.impl.begin_send(bytes(p))
-
-    def send(self, p):
-        """Send ISOTP message p, blocking until either the transmission is
-        successful or it fails.
-        Returns None if the transmission fails, or the number of bytes sent
-        if it succeeds."""
-        if hasattr(p, "sent_time"):
-            p.sent_time = time.time()
-
-        return self.impl.send(bytes(p))
+        return self.outs.begin_send(bytes(p))
 
     def recv_raw(self, x=0xffff):
         """Receive a complete ISOTP message, blocking until a message is
         received or the specified timeout is reached.
         If self.timeout is 0, then this function doesn't block and returns the
         first frame in the receive buffer or None if there isn't any."""
-        return self.basecls, self.impl.recv(self.timeout), time.time()
+        return self.basecls, self.ins.recv(self.timeout), time.time()
 
     def recv(self, x=0xffff):
         msg = SuperSocket.recv(self, x)
@@ -521,6 +634,15 @@ class ISOTPSoftSocket(SuperSocket):
         if hasattr(msg, "exdst"):
             msg.exdst = self.exdst
         return msg
+
+    @staticmethod
+    def select(sockets, remain=None):
+        """This function is called during sendrecv() routine to select
+        the available sockets.
+        """
+        # ISOTPSoftSockets aren't selectable, so we return all of them
+        # sockets, None (means use the socket's recv() )
+        return sockets, None
 
 
 ISOTPSocket = ISOTPSoftSocket
@@ -758,8 +880,8 @@ class ISOTPSocketImplementation:
 
         self.mutex.acquire()
         try:
-            if (self.tx_state == ISOTP_WAIT_FC
-                    or self.tx_state == ISOTP_WAIT_FIRST_FC):
+            if (self.tx_state == ISOTP_WAIT_FC or
+                    self.tx_state == ISOTP_WAIT_FIRST_FC):
                 # we did not get any flow control frame in time
                 # reset tx state
                 self.tx_state = ISOTP_IDLE
@@ -839,8 +961,8 @@ class ISOTPSocketImplementation:
 
     def _recv_fc(self, data):
         """Process a received 'Flow Control' frame"""
-        if (self.tx_state != ISOTP_WAIT_FC
-                and self.tx_state != ISOTP_WAIT_FIRST_FC):
+        if (self.tx_state != ISOTP_WAIT_FC and
+                self.tx_state != ISOTP_WAIT_FIRST_FC):
             return 0
 
         self.tx_timer.cancel()
@@ -1322,7 +1444,9 @@ if six.PY3 and LINUX:
 
         def __set_option_flags(self, sock, extended_addr=None,
                                extended_rx_addr=None,
-                               listen_only=False):
+                               listen_only=False,
+                               padding=False,
+                               transmit_time=100):
             option_flags = CAN_ISOTP_DEFAULT_FLAGS
             if extended_addr is not None:
                 option_flags = option_flags | CAN_ISOTP_EXTEND_ADDR
@@ -1337,9 +1461,14 @@ if six.PY3 and LINUX:
             if listen_only:
                 option_flags = option_flags | CAN_ISOTP_LISTEN_MODE
 
+            if padding:
+                option_flags = option_flags | CAN_ISOTP_TX_PADDING \
+                                            | CAN_ISOTP_RX_PADDING
+
             sock.setsockopt(SOL_CAN_ISOTP,
                             CAN_ISOTP_OPTS,
                             self.__build_can_isotp_options(
+                                frame_txtime=transmit_time,
                                 flags=option_flags,
                                 ext_address=extended_addr,
                                 rx_ext_address=extended_rx_addr))
@@ -1351,6 +1480,8 @@ if six.PY3 and LINUX:
                      extended_addr=None,
                      extended_rx_addr=None,
                      listen_only=False,
+                     padding=False,
+                     transmit_time=100,
                      basecls=ISOTP):
             self.iface = conf.contribs['NativeCANSocket']['iface'] \
                 if iface is None else iface
@@ -1359,7 +1490,9 @@ if six.PY3 and LINUX:
             self.__set_option_flags(self.can_socket,
                                     extended_addr,
                                     extended_rx_addr,
-                                    listen_only)
+                                    listen_only,
+                                    padding,
+                                    transmit_time)
 
             self.src = sid
             self.dst = did
@@ -1374,6 +1507,7 @@ if six.PY3 and LINUX:
                                        self.__build_can_isotp_ll_options())
 
             self.__bind_socket(self.can_socket, iface, sid, did)
+            self.ins = self.can_socket
             self.outs = self.can_socket
             if basecls is None:
                 warning('Provide a basecls ')

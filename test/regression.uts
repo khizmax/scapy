@@ -39,7 +39,7 @@ ls()
 ~ conf command
 
 with ContextManagerCaptureOutput() as cmco:
-    ls("IP")
+    ls("IP", case_sensitive=True)
     result_ls = cmco.get_output().split("\n")
 
 assert all("IP" in x for x in result_ls if x.strip())
@@ -140,8 +140,13 @@ else:
 if len(routes6):
     assert(len([r for r in routes6 if r[0] == "::1" and r[4] == ["::1"]]) >= 1)
     if len(iflist) >= 2:
-        assert(len([r for r in routes6 if r[0] == "fe80::" and r[1] == 64]) >= 1)
-        len([r for r in routes6 if in6_islladdr(r[0]) and r[1] == 128 and r[4] == ["::1"]]) >= 1
+        assert len([r for r in routes6 if r[0] == "fe80::" and r[1] == 64]) >= 1
+        try:
+            assert len([r for r in routes6 if in6_islladdr(r[0]) and r[1] == 128 and r[4] == ["::1"]]) >= 1
+        except:
+            # IPv6 is not available, but we still check the loopback
+            assert conf.route6.route("::/0") == (scapy.consts.LOOPBACK_NAME, "::", "::")
+            assert len([r for r in routes6 if r[1] == 128 and r[4] == ["::1"]]) >= 1
 else:
     True
 
@@ -243,7 +248,6 @@ scapy_delete_temp_files()
 assert(len(conf.temp_files) == 0)
 
 = Emulate interact()
-
 import mock, sys
 from scapy.main import interact
 # Detect IPython
@@ -252,7 +256,7 @@ try:
 except:
     code_interact_import = "scapy.main.code.interact"
 else:
-    code_interact_import = "IPython.terminal.embed.InteractiveShellEmbed"
+    code_interact_import = "IPython.start_ipython"
 
 @mock.patch(code_interact_import)
 def interact_emulator(code_int, extra_args=[]):
@@ -261,7 +265,6 @@ def interact_emulator(code_int, extra_args=[]):
         interact(argv=["-s scapy1"] + extra_args, mybanner="What a test")
         return True
     except:
-        raise
         return False
     finally:
         sys.ps1 = ">>> "
@@ -269,6 +272,84 @@ def interact_emulator(code_int, extra_args=[]):
 assert interact_emulator()  # Default
 assert not interact_emulator(extra_args=["-?"])  # Failing
 assert interact_emulator(extra_args=["-d"])  # Extended
+
+= Test explore() with GUI mode
+~ command
+
+import mock
+from scapy.tools.UTscapy import Bunch
+
+def test_explore_gui(is_layer, layer):
+    prompt_toolkit_mocked_module = Bunch(
+                                       shortcuts=Bunch(
+                                           dialogs=Bunch(
+                                               radiolist_dialog=(lambda *args, **kargs: layer),
+                                               yes_no_dialog=(lambda *args, **kargs: is_layer)
+                                           )
+                                       ),
+                                       formatted_text=Bunch(HTML=lambda x: x),
+                                       __version__="2.0.0"
+                                   )
+    # a mock.patch isn't enough to mock a module. Let's roll sys.modules
+    modules_patched = {
+        "prompt_toolkit": prompt_toolkit_mocked_module,
+        "prompt_toolkit.shortcuts": prompt_toolkit_mocked_module.shortcuts,
+        "prompt_toolkit.shortcuts.dialogs": prompt_toolkit_mocked_module.shortcuts.dialogs,
+        "prompt_toolkit.formatted_text": prompt_toolkit_mocked_module.formatted_text,
+    }
+    with mock.patch.dict("sys.modules", modules_patched):
+        with ContextManagerCaptureOutput() as cmco:
+            explore()
+            result_explore = cmco.get_output()
+        return result_explore
+
+explore_dns = test_explore_gui(True, "scapy.layers.dns")
+assert "DNS" in explore_dns
+assert "DNS Question Record" in explore_dns
+assert "DNSRRNSEC3" in explore_dns
+assert "DNS TSIG Resource Record" in explore_dns
+
+explore_avs = test_explore_gui(False, "avs")
+assert "AVSWLANHeader" in explore_avs
+assert "AVS WLAN Monitor Header" in explore_avs
+
+= Test explore() with non-GUI mode
+~ command
+
+def test_explore_non_gui(layer):
+    with ContextManagerCaptureOutput() as cmco:
+        explore(layer)
+        result_explore = cmco.get_output()
+    return result_explore
+
+explore_dns = test_explore_non_gui("scapy.layers.dns")
+assert "DNS" in explore_dns
+assert "DNS Question Record" in explore_dns
+assert "DNSRRNSEC3" in explore_dns
+assert "DNS TSIG Resource Record" in explore_dns
+
+explore_avs = test_explore_non_gui("avs")
+assert "AVSWLANHeader" in explore_avs
+assert "AVS WLAN Monitor Header" in explore_avs
+
+assert test_explore_non_gui("scapy.layers.dns") == test_explore_non_gui("dns")
+assert test_explore_non_gui("scapy.contrib.avs") == test_explore_non_gui("avs")
+
+try:
+    explore("unknown_module")
+    assert False  # The previous should have raised an exception
+except Scapy_Exception:
+    pass
+
+= Test load_contrib overwrite
+load_contrib("gtp")
+assert GTPHeader.__module__ == "scapy.contrib.gtp"
+
+load_contrib("gtp_v2")
+assert GTPHeader.__module__ == "scapy.contrib.gtp_v2"
+
+load_contrib("gtp")
+assert GTPHeader.__module__ == "scapy.contrib.gtp"
 
 = Test sane function
 sane("A\x00\xFFB") == "A..B"
@@ -946,6 +1027,9 @@ a = ASN1_INTEGER(int("1"*23))
 assert repr(a) in ["0x25a55a46e5da99c71c7 <ASN1_INTEGER[1111111111...1111111111]>",
                    "0x25a55a46e5da99c71c7 <ASN1_INTEGER[1111111111...111111111L]>"]
 
+= ASN1 - ASN1_OID
+assert raw(ASN1_OID("")) == b"\x06\x00"
+
 = RandASN1Object(), specific crashes
 
 import random
@@ -1305,9 +1389,9 @@ def send_and_sniff(pkt, timeout=2, flt=None, opened_socket=None):
         while not results.empty():
             assert results.get()
 
-send_and_sniff(IP(dst="secdev.org")/ICMP())
-send_and_sniff(IP(dst="secdev.org")/ICMP(), flt="icmp")
-send_and_sniff(Ether()/IP(dst="secdev.org")/ICMP())
+retry_test(lambda: send_and_sniff(IP(dst="secdev.org")/ICMP()))
+retry_test(lambda: send_and_sniff(IP(dst="secdev.org")/ICMP(), flt="icmp"))
+retry_test(lambda: send_and_sniff(Ether()/IP(dst="secdev.org")/ICMP()))
 
 = Test L2ListenTcpdump socket
 ~ netaccess FIXME_py3
@@ -1869,6 +1953,15 @@ q
 assert( raw(p) == raw(q) )
 assert( q[PPP_ECP_Option].data == b"ABCDEFG" )
 
+
+= PPP_ (PPP with only one byte for protocol)
+~ ppp
+
+assert(len(raw(PPP_() / IP())) == 21)
+
+p = PPP(b'!E\x00\x00<\x00\x00@\x008\x06\xa5\xce\x85wP)\xc0\xa8Va\x01\xbbd\x8a\xe2}r\xb8O\x95\xb5\x84\xa0\x12q \xc8\x08\x00\x00\x02\x04\x02\x18\x04\x02\x08\nQ\xdf\xd6\xb0\x00\x07LH\x01\x03\x03\x07Ao')
+assert(IP in p)
+assert(TCP in p)
 
 # Scapy6 Regression Test Campaign 
 
@@ -3624,6 +3717,11 @@ del(l[4])
 del(l[2])
 raw(defragment6(l)) == b'`\x00\x00\x00\x0f\xb4\x06@\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x01\x00\x14\x00P\x00\x00\x00\x00\x00\x00\x00\x00P\x02 \x00\xb2\x0f\x00\x00AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
 
+= defragment6 - test the packet length
+pkts = fragment6(IPv6()/IPv6ExtHdrFragment()/UDP(dport=42, sport=42)/Raw(load="A"*1500), 1280)
+pkts = [IPv6(raw(p)) for p in pkts]
+assert defragment6(pkts).plen == 1508
+
 
 ############
 ############
@@ -4909,10 +5007,14 @@ a.optcode == 43 and a.optlen == 8 and a.reqopts == [1,2,3,4]
 
 = Basic build & dissect
 s = raw(DHCP6OptClientLinkLayerAddr())
-assert(s == b"\x00O\x00\x07\x00\x01\x00\x00\x00\x00\x00\x00")
+assert(s == b"\x00O\x00\x08\x00\x01\x00\x00\x00\x00\x00\x00")
 
 p = DHCP6OptClientLinkLayerAddr(s)
 assert(p.clladdr == "00:00:00:00:00:00")
+
+r = b"\x00O\x00\x08\x00\x01\x00\x01\x02\x03\x04\x05"
+p = DHCP6OptClientLinkLayerAddr(r)
+assert(p.clladdr == "00:01:02:03:04:05")
 
 
 ############
@@ -6444,6 +6546,21 @@ pkt = IP(len=42, ihl=6, options=[IPOption_RR()]) / UDP() / ("A" * 10)
 bpkt = IP(raw(pkt))
 assert bpkt.chksum == 0x70bd and bpkt.payload.chksum == 0xbb17
 
+= IP with forced-length 0
+p = IP()/TCP()
+p[IP].len = 0
+p = IP(raw(p))
+
+assert p.len == 0
+
+= TCP payload with IP Total Length 0
+data = b'1234567890abcdef123456789ABCDEF'
+pkt = IP()/TCP()/data
+pkt2 = IP(raw(pkt))
+pkt2.len = 0
+pkt3 = IP(raw(pkt2))
+assert pkt3.load == data
+
 = DNS
 ~ dns
 
@@ -7048,6 +7165,83 @@ ff02::%lo0/32                      ::1                            UC          - 
     assert(check_mandatory_ipv6_routes(routes))
 
 test_netbsd_7_0()
+
+
+############
+############
++ Mocked route() calls
+
+= Mocked IPv4 routes calls
+
+import scapy
+
+old_routes = conf.route.routes
+old_iface = conf.iface
+old_loopback = scapy.consts.LOOPBACK_INTERFACE
+try:
+    conf.iface = 'enp3s0'
+    scapy.consts.LOOPBACK_INTERFACE = 'lo'
+    conf.route.invalidate_cache()
+    conf.route.routes = [
+        (4294967295, 4294967295, '0.0.0.0', 'wlan0', '', 281),
+        (4294967295, 4294967295, '0.0.0.0', 'lo', '', 291),
+        (4294967295, 4294967295, '0.0.0.0', 'enp3s0', '192.168.0.119', 281),
+        (3758096384, 4026531840, '0.0.0.0', 'lo', '', 291),
+        (3758096384, 4026531840, '0.0.0.0', 'wlan0', '', 281),
+        (3758096384, 4026531840, '0.0.0.0', 'enp3s0', '1.1.1.1', 281),
+        (3232235775, 4294967295, '0.0.0.0', 'enp3s0', '2.2.2.2', 281),
+        (3232235639, 4294967295, '0.0.0.0', 'enp3s0', '3.3.3.3', 281),
+        (3232235520, 4294967040, '0.0.0.0', 'enp3s0', '4.4.4.4', 281),
+        (0, 0, '192.168.0.254', 'enp3s0', '192.168.0.119', 25)
+    ]
+    assert conf.route.route("192.168.0.0-10") == ('enp3s0', '4.4.4.4', '0.0.0.0')
+    assert conf.route.route("192.168.0.119") == ('lo', '192.168.0.119', '0.0.0.0')
+    assert conf.route.route("224.0.0.0") == ('enp3s0', '1.1.1.1', '0.0.0.0')
+    assert conf.route.route("255.255.255.255") == ('enp3s0', '192.168.0.119', '0.0.0.0')
+    assert conf.route.route("*") == ('enp3s0', '192.168.0.119', '192.168.0.254')
+finally:
+    scapy.consts.LOOPBACK_INTERFACE = old_loopback
+    conf.iface = old_iface
+    conf.route.routes = old_routes
+    conf.route.invalidate_cache()
+
+
+= Mocked IPv6 routes calls
+
+old_routes = conf.route6.routes
+old_iface = conf.iface
+old_loopback = scapy.consts.LOOPBACK_INTERFACE
+try:
+    conf.iface = 'enp3s0'
+    scapy.consts.LOOPBACK_INTERFACE = 'lo'
+    conf.route6.invalidate_cache()
+    conf.route6.routes = [
+        ('fe80::dd17:1fa6:a123:ab4', 128, '::', 'lo', ['fe80::dd17:1fa6:a123:ab4'], 291),
+        ('fe80::7101:5678:1234:da65', 128, '::', 'enp3s0', ['fe80::7101:5678:1234:da65'], 281),
+        ('fe80::1f:ae12:4d2c:abff', 128, '::', 'wlan0', ['fe80::1f:ae12:4d2c:abff'], 281),
+        ('fe80::', 64, '::', 'wlan0', ['fe80::1f:ae12:4d2c:abff'], 281),
+        ('fe80::', 64, '::', 'lo', ['fe80::dd17:1fa6:a123:ab4'], 291),
+        ('fe80::', 64, '::', 'enp3s0', ['fe80::7101:5678:1234:da65'], 281),
+        ('2a01:e35:1e06:ab56:7010:6548:9646:fa77', 128, '::', 'enp3s0', ['2a01:e35:1e06:ab56:7010:6548:9646:fa77', '2a01:e35:1e06:ab56:512:8bb7:8ab8:14a8'], 281),
+        ('2a01:e35:1e06:ab56:512:8bb7:8ab8:14a8', 128, '::', 'enp3s0', ['2a01:e35:1e06:ab56:7010:6548:9646:fa77', '2a01:e35:1e06:ab56:512:8bb7:8ab8:14a8'], 281),
+        ('2a01:e35:1e06:ab56::', 64, '::', 'enp3s0', ['2a01:e35:1e06:ab56:7010:6548:9646:fa77', '2a01:e35:1e06:ab56:512:8bb7:8ab8:14a8'], 281),
+        ('::', 0, 'fe80::160c:64aa:ef6f:fe14', 'enp3s0', ['2a01:e35:1e06:ab56:7010:6548:9646:fa77', '2a01:e35:1e06:ab56:512:8bb7:8ab8:14a8'], 281)
+    ]
+    assert conf.route6.route("2a01:e35:1e06:ab56:512:8bb7:8ab8:14a8") == ('enp3s0', '2a01:e35:1e06:ab56:7010:6548:9646:fa77', '::')
+    assert conf.route6.route("::1") == ('enp3s0', '2a01:e35:1e06:ab56:7010:6548:9646:fa77', 'fe80::160c:64aa:ef6f:fe14')
+    assert conf.route6.route("ff02::1") == ('enp3s0', 'fe80::7101:5678:1234:da65', '::')
+    assert conf.route6.route("fe80::1") == ('enp3s0', 'fe80::7101:5678:1234:da65', '::')
+    assert conf.route6.route("fe80::1", dev='lo') == ('lo', 'fe80::dd17:1fa6:a123:ab4', '::')
+finally:
+    scapy.consts.LOOPBACK_INTERFACE = old_loopback
+    conf.iface = old_iface
+    conf.route6.routes = old_routes
+    conf.route6.invalidate_cache()
+
+= Windows: reset routes properly
+
+if WINDOWS:
+    route_add_loopback()
 
 ############
 ############
@@ -8543,7 +8737,7 @@ pkt.flags.NextProtocol and pkt.NextProtocol == 3
 = Verify UDP dport overloading
 p = Ether(dst="11:11:11:11:11:11", src="22:22:22:22:22:22")
 p /= IP(src="1.1.1.1", dst="2.2.2.2") / UDP(sport=1111)
-p /= VXLAN(flags=0x8, vni=42) / Ether() / IP()
+p /= VXLAN(flags=0xC, vni=42, NextProtocol=0) / Ether() / IP()
 p = Ether(raw(p))
 assert(p[UDP].dport == 4789)
 assert(p[Ether:2].type == 0x800)
@@ -8561,21 +8755,51 @@ assert(p[Ether:2].type == 0x800)
 = Build a VXLAN packet with no group policy ID
 p = Ether(dst="11:11:11:11:11:11", src="22:22:22:22:22:22")
 p /= IP(src="1.1.1.1", dst="2.2.2.2") / UDP(sport=1111)
-p /= VXLAN(flags=0x8, vni=42) / Ether() / IP()
+p /= VXLAN(flags=0xC, vni=42) / Ether() / IP()
 p = Ether(raw(p))
-assert(p[VXLAN].reserved1 == 0x0)
+assert(p[VXLAN].reserved2 == 0x0)
 assert(p[VXLAN].gpid is None)
 assert(p[Ether:2].type == 0x800)
 
 = Build a VXLAN packet with group policy ID = 42
 p = Ether(dst="11:11:11:11:11:11", src="22:22:22:22:22:22")
 p /= IP(src="1.1.1.1", dst="2.2.2.2") / UDP(sport=1111)
-p /= VXLAN(flags=0x88, gpid=42, vni=42) / Ether() / IP()
+p /= VXLAN(flags=0x8C, gpid=42, vni=42) / Ether() / IP()
 p = Ether(raw(p))
 assert(p[VXLAN].gpid == 42)
 assert(p[VXLAN].reserved1 is None)
 assert(p[Ether:2].type == 0x800)
 
+= Build a VXLAN packet followed by and IP or IPv6 layer
+etherproto = 0x0
+ipproto = 0x1
+ipv6proto = 0x2
+iptest = "192.168.20.20"
+ipv6test = "659f:2c23:565:3fab:32d5:bb95:a0ed:2e3b"
+
+expkt = UDP() / VXLAN() / IP(dst=iptest) / "testing"
+expkt = UDP(bytes(expkt))
+assert(expkt[VXLAN].NextProtocol == ipproto)
+assert(IP in expkt)
+assert(expkt[IP].dst == iptest)
+
+expkt = UDP() / VXLAN() / IPv6(dst=ipv6test) / "testing"
+expkt = UDP(bytes(expkt))
+assert(expkt[VXLAN].NextProtocol == ipv6proto)
+assert(IPv6 in expkt)
+assert(expkt[IPv6].dst == ipv6test)
+
+expkt = UDP() / VXLAN(flags=0x4, NextProtocol=ipproto) / "0xfffffffffffffffffffffffffffffffffffffffffffff"
+expkt = UDP(bytes(expkt))
+assert(IP in expkt)
+
+expkt = UDP() / VXLAN(flags=0x4, NextProtocol=ipv6proto) / "0xfffffffffffffffffffffffffffffffffffffffffffff"
+expkt = UDP(bytes(expkt))
+assert(IPv6 in expkt)
+
+expkt = UDP() / VXLAN(flags=0x4, NextProtocol=etherproto) / "0xfffffffffffffffffffffffffffffffffffffffffffff"
+expkt = UDP(bytes(expkt))
+assert(Ether in expkt)
 
 ############
 ############
@@ -9468,6 +9692,10 @@ assert repr(pkt.flags) == '<Flag 6 (DF+evil)>'
 
 assert len({IP().flags, IP().flags}) == 1
 
+pkt = IP()
+pkt.flags = ""
+assert pkt.flags == 0
+
 = TCP flags
 ~ TCP
 
@@ -10048,6 +10276,7 @@ assert a.src == '00:00:00:00:00:00'
 + ASN.1
 
 = MIB
+~ mib
 
 import tempfile
 fd, fname = tempfile.mkstemp()
@@ -10055,7 +10284,7 @@ os.write(fd, b"-- MIB test\nscapy       OBJECT IDENTIFIER ::= {test 2807}\n")
 os.close(fd)
 
 load_mib(fname)
-assert(len([k for k in conf.mib.iterkeys() if "scapy" in k]) == 1)
+assert(len([k for k in conf.mib.__dict__.values() if "scapy" in k]) == 1)
 
 assert(len([oid for oid in conf.mib]) > 100)
 
@@ -10066,6 +10295,9 @@ assert(len(conf.mib._find("MIB", "keyUsage")))
 assert(len(conf.mib._recurs_find_all((), "MIB", "keyUsage")))
 
 = MIB - graph
+~ mib
+
+import mock
 
 @mock.patch("scapy.asn1.mib.do_graph")
 def get_mib_graph(do_graph):
@@ -10117,6 +10349,16 @@ r1 == b'@\x04\x08\x08\x08\x08'
 r2 = b.dec(r1)[0]
 r2.val == '8.8.8.8'
 
+a = b'\x1f\xfe\xfe\xfe\xfe\xfe\xfe\xfe\xfe\xfe\xfe\xfe\xfe\xfe\xfe\xfe\xfe\xfe\xfe\xfe\xfe\xfe\xfe\xfe\xfe\xfe\xfe\xfe\xfe\xfe\xfe\xfe\xfe\xfe\xfe\xfe\xfe\xfe\xfe\xfe\xfe\xfe\xfe\xfe\xfe\xfe\xfe\xfe\xfe\xfe\xfe\xfe\xfe\xfe\xfe\xfe\xfe\xfe\xfe\xfe\xfe\xfe\xfe\xfe\xfe\xfe\xfe\xfe\xfe\xfe\xfe\xfe\xfe\xfe\xfe\xfe\xfe\xfe\xfe\xfe\xfe\xfe\xfe\xfe\xfe\xfe\xfe\xfe\xfe\xfe\xfe\xfe\xfe\xfe\xfe\xfe\xfe\xfe\xfe\xfe\xfe\xfe\xfe\xfe\xfe\xfe\xfe\xfe\xfe\xfe\xfe\xfe\xfe\xfe\xfe\xfe\xfe\xfe\xfe\xfe\xfe\xfe\xfe\xfe\xfe\xfe\xfe\xfe\xfe\xfe\x01\x01\x00C\x02\x01U0\x0f0\r\x06\x08+\x06\x01\x02\x01\x02\x01\x00\x02\x01!'
+ret = False
+try:
+    BERcodec_Object.check_type(a)
+except BER_BadTag_Decoding_Error:
+    ret = True
+else:
+    ret = False
+
+assert(ret)
 
 ############
 ############
@@ -10321,6 +10563,19 @@ class Test(Packet):
 pkt = Test(raw(Test(Values=[0, 0, 0, 0, 1, 1, 1, 1])))
 assert(pkt.BitCount == 8)
 assert(pkt.ByteCount == 1)
+
+= PacketListField
+
+class TestPacket(Packet):
+  name = 'TestPacket'
+  fields_desc = [ PacketListField('list', [], 0) ]
+
+a = TestPacket()
+a.list.append(1)
+assert(len(a.list) == 1)
+
+b = TestPacket()
+assert(len(b.list) == 0)
 
 ############
 ############
@@ -10589,7 +10844,7 @@ if PYX:
 = svgdump()
 
 print("PYX: %d" % PYX)
-if PYX:
+if PYX and not six.PY2:
     import tempfile
     import os
     filename = tempfile.mktemp(suffix=".svg")

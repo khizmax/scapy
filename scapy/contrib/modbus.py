@@ -19,9 +19,16 @@
 
 # Copyright (C) 2017 Arthur Gervais, Ken LE PRADO, Sébastien Mainand, Thomas Aurel  # noqa: E501
 
-from scapy.packet import *
-from scapy.fields import *
-from scapy.layers.inet import *
+import struct
+
+from scapy.packet import Packet, bind_layers
+from scapy.fields import XByteField, XShortField, StrLenField, ByteEnumField, \
+    BitFieldLenField, ByteField, ConditionalField, EnumField, FieldListField, \
+    ShortField, StrFixedLenField
+from scapy.layers.inet import TCP
+from scapy.utils import orb
+from scapy.config import conf
+from scapy.volatile import VolatileValue
 
 # TODO: implement serial specific function codes
 
@@ -194,7 +201,7 @@ class ModbusPDU07ReadExceptionStatusRequest(Packet):
 class ModbusPDU07ReadExceptionStatusResponse(Packet):
     name = "Read Exception Status Response"
     fields_desc = [XByteField("funcCode", 0x07),
-                   XByteField("startingAddr", 0x00)]
+                   XByteField("startAddr", 0x00)]
 
 
 class ModbusPDU07ReadExceptionStatusError(Packet):
@@ -206,7 +213,7 @@ class ModbusPDU07ReadExceptionStatusError(Packet):
 class ModbusPDU0FWriteMultipleCoilsRequest(Packet):
     name = "Write Multiple Coils"
     fields_desc = [XByteField("funcCode", 0x0F),
-                   XShortField("startingAddr", 0x0000),
+                   XShortField("startAddr", 0x0000),
                    XShortField("quantityOutput", 0x0001),
                    BitFieldLenField("byteCount", None, 8, count_of="outputsValue"),  # noqa: E501
                    FieldListField("outputsValue", [0x00], XByteField("", 0x00), count_from=lambda pkt: pkt.byteCount)]  # noqa: E501
@@ -218,7 +225,7 @@ class ModbusPDU0FWriteMultipleCoilsRequest(Packet):
 class ModbusPDU0FWriteMultipleCoilsResponse(Packet):
     name = "Write Multiple Coils Response"
     fields_desc = [XByteField("funcCode", 0x0F),
-                   XShortField("startingAddr", 0x0000),
+                   XShortField("startAddr", 0x0000),
                    XShortField("quantityOutput", 0x0001)]
 
 
@@ -231,7 +238,7 @@ class ModbusPDU0FWriteMultipleCoilsError(Packet):
 class ModbusPDU10WriteMultipleRegistersRequest(Packet):
     name = "Write Multiple Registers"
     fields_desc = [XByteField("funcCode", 0x10),
-                   XShortField("startingAddr", 0x0000),
+                   XShortField("startAddr", 0x0000),
                    BitFieldLenField("quantityRegisters", None, 16, count_of="outputsValue",),  # noqa: E501
                    BitFieldLenField("byteCount", None, 8, count_of="outputsValue", adjust=lambda pkt, x: x * 2),  # noqa: E501
                    FieldListField("outputsValue", [0x0000], XShortField("", 0x0000),  # noqa: E501
@@ -241,7 +248,7 @@ class ModbusPDU10WriteMultipleRegistersRequest(Packet):
 class ModbusPDU10WriteMultipleRegistersResponse(Packet):
     name = "Write Multiple Registers Response"
     fields_desc = [XByteField("funcCode", 0x10),
-                   XShortField("startingAddr", 0x0000),
+                   XShortField("startAddr", 0x0000),
                    XShortField("quantityRegisters", 0x0001)]
 
 
@@ -298,8 +305,8 @@ class ModbusPDU14ReadFileRecordRequest(Packet):
 
     def post_build(self, p, pay):
         if self.byteCount is None:
-            l = len(pay)
-            p = p[:1] + struct.pack("!B", l) + p[3:]
+            tmp_len = len(pay)
+            p = p[:1] + struct.pack("!B", tmp_len) + p[3:]
         return p + pay
 
 
@@ -321,8 +328,8 @@ class ModbusPDU14ReadFileRecordResponse(Packet):
 
     def post_build(self, p, pay):
         if self.dataLength is None:
-            l = len(pay)
-            p = p[:1] + struct.pack("!B", l) + p[3:]
+            tmp_len = len(pay)
+            p = p[:1] + struct.pack("!B", tmp_len) + p[3:]
         return p + pay
 
     def guess_payload_class(self, payload):
@@ -360,8 +367,8 @@ class ModbusPDU15WriteFileRecordRequest(Packet):
 
     def post_build(self, p, pay):
         if self.dataLength is None:
-            l = len(pay)
-            p = p[:1] + struct.pack("!B", l) + p[3:]
+            tmp_len = len(pay)
+            p = p[:1] + struct.pack("!B", tmp_len) + p[3:]
             return p + pay
 
     def guess_payload_class(self, payload):
@@ -791,8 +798,8 @@ class ModbusADURequest(Packet):
 
     def post_build(self, p, pay):
         if self.len is None:
-            l = len(pay) + 1  # +len(p)
-            p = p[:4] + struct.pack("!H", l) + p[6:]
+            tmp_len = len(pay) + 1  # +len(p)
+            p = p[:4] + struct.pack("!H", tmp_len) + p[6:]
         return p + pay
 
 
@@ -830,8 +837,8 @@ class ModbusADUResponse(Packet):
 
     def post_build(self, p, pay):
         if self.len is None:
-            l = len(pay) + 1  # +len(p)
-            p = p[:4] + struct.pack("!H", l) + p[6:]
+            tmp_len = len(pay) + 1  # +len(p)
+            p = p[:4] + struct.pack("!H", tmp_len) + p[6:]
         return p + pay
 
 

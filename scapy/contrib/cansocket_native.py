@@ -3,6 +3,8 @@
 # Copyright (C) Nils Weiss <nils@we155.de>
 # This program is published under a GPLv2 license
 
+# scapy.contrib.description = Native CANSocket
+# scapy.contrib.status = loads
 
 """
 Native CANSocket.
@@ -103,13 +105,6 @@ class CANSocket(SuperSocket):
 
     def close(self):
         self.ins.close()
-
-    @staticmethod
-    def is_python_can_socket():
-        """Function used to determine if a socket is a python-can CANSocket.
-        This is used from sendrecv, to determine if a non standard _get_pkt()
-        and _select() function needs to be used."""
-        return False
 
 
 @conf.commands.register

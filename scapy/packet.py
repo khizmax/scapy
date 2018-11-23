@@ -15,16 +15,17 @@ import time
 import itertools
 import copy
 import subprocess
+import types
 
 from scapy.fields import StrField, ConditionalField, Emph, PacketListField, \
-    BitField, MultiEnumField, EnumField, FlagsField
-from scapy.config import conf
+    BitField, MultiEnumField, EnumField, FlagsField, MultipleTypeField
+from scapy.config import conf, _version_checker
 from scapy.consts import WINDOWS
-from scapy.compat import *
+from scapy.compat import raw, orb
 from scapy.base_classes import BasePacket, Gen, SetGen, Packet_metaclass
-from scapy.volatile import VolatileValue
+from scapy.volatile import VolatileValue, RandField
 from scapy.utils import import_hexcap, tex_escape, colgen, get_temp_file, \
-    issubtype, ContextManagerSubprocess
+    issubtype, ContextManagerSubprocess, pretty_list
 from scapy.error import Scapy_Exception, log_runtime
 from scapy.extlib import PYX
 import scapy.modules.six as six
@@ -74,6 +75,11 @@ class Packet(six.with_metaclass(Packet_metaclass, BasePacket)):
     payload_guess = []
     show_indent = 1
     show_summary = True
+    class_dont_cache = dict()
+    class_packetfields = dict()
+    class_default_fields = dict()
+    class_default_fields_ref = dict()
+    class_fieldtype = dict()
 
     @classmethod
     def from_hexcap(cls):
@@ -162,7 +168,11 @@ class Packet(six.with_metaclass(Packet_metaclass, BasePacket)):
         """
         Initialize each fields of the fields_desc dict
         """
-        self.do_init_fields(self.fields_desc)
+
+        if self.class_dont_cache.get(self.__class__, False):
+            self.do_init_fields(self.fields_desc)
+        else:
+            self.do_init_cached_fields()
 
     def do_init_fields(self, flist):
         """
@@ -173,6 +183,65 @@ class Packet(six.with_metaclass(Packet_metaclass, BasePacket)):
             self.fieldtype[f.name] = f
             if f.holds_packets:
                 self.packetfields.append(f)
+
+    def do_init_cached_fields(self):
+        """
+        Initialize each fields of the fields_desc dict, or use the cached
+        fields information
+        """
+
+        cls_name = self.__class__
+
+        # Build the fields information
+        if Packet.class_default_fields.get(cls_name, None) is None:
+            self.prepare_cached_fields(self.fields_desc)
+
+        # Use fields information from cache
+        if not Packet.class_default_fields.get(cls_name, None) is None:
+            self.default_fields = Packet.class_default_fields[cls_name]
+            self.fieldtype = Packet.class_fieldtype[cls_name]
+            self.packetfields = Packet.class_packetfields[cls_name]
+
+            # Deepcopy default references
+            for fname in Packet.class_default_fields_ref[cls_name]:
+                value = copy.deepcopy(self.default_fields[fname])
+                setattr(self, fname, value)
+
+    def prepare_cached_fields(self, flist):
+        """
+        Prepare the cached fields of the fields_desc dict
+        """
+
+        cls_name = self.__class__
+
+        # Fields cache initialization
+        if flist:
+            Packet.class_default_fields[cls_name] = dict()
+            Packet.class_default_fields_ref[cls_name] = list()
+            Packet.class_fieldtype[cls_name] = dict()
+            Packet.class_packetfields[cls_name] = list()
+
+        # Fields initialization
+        for f in flist:
+            if isinstance(f, MultipleTypeField):
+                del Packet.class_default_fields[cls_name]
+                del Packet.class_default_fields_ref[cls_name]
+                del Packet.class_fieldtype[cls_name]
+                del Packet.class_packetfields[cls_name]
+                self.class_dont_cache[cls_name] = True
+                self.do_init_fields(self.fields_desc)
+                break
+
+            tmp_copy = copy.deepcopy(f.default)
+            Packet.class_default_fields[cls_name][f.name] = tmp_copy
+            Packet.class_fieldtype[cls_name][f.name] = f
+            if f.holds_packets:
+                Packet.class_packetfields[cls_name].append(f)
+
+            # Remember references
+            if isinstance(f.default, (list, dict, set)) or \
+                    isinstance(f.default, RandField):
+                Packet.class_default_fields_ref[cls_name].append(f.name)
 
     def dissection_done(self, pkt):
         """DEV: will be called after a dissection is completed"""
@@ -291,7 +360,7 @@ class Packet(six.with_metaclass(Packet_metaclass, BasePacket)):
     def delfieldval(self, attr):
         if attr in self.fields:
             del(self.fields[attr])
-            self.explicit = 0  # in case a default value must be explicited
+            self.explicit = 0  # in case a default value must be explicit
             self.raw_packet_cache = None
             self.raw_packet_cache_fields = None
             self.wirelen = None
@@ -339,9 +408,15 @@ class Packet(six.with_metaclass(Packet_metaclass, BasePacket)):
             if isinstance(f, ConditionalField) and not f._evalcond(self):
                 continue
             if f.name in self.fields:
-                val = f.i2repr(self, self.fields[f.name])
+                fval = self.fields[f.name]
+                if isinstance(fval, (list, dict, set)) and len(fval) == 0:
+                    continue
+                val = f.i2repr(self, fval)
             elif f.name in self.overloaded_fields:
-                val = f.i2repr(self, self.overloaded_fields[f.name])
+                fover = self.overloaded_fields[f.name]
+                if isinstance(fover, (list, dict, set)) and len(fover) == 0:
+                    continue
+                val = f.i2repr(self, fover)
             else:
                 continue
             if isinstance(f, Emph) or f in conf.emph:
@@ -694,21 +769,30 @@ class Packet(six.with_metaclass(Packet_metaclass, BasePacket)):
             bkcol = next(backcolor)
             proto, fields = t.pop()
             y += 0.5
-            pt = pyx.text.text(XSTART, (YTXT - y) * YMUL, r"\font\cmssfont=cmss10\cmssfont{%s}" % proto.name, [pyx.text.size.Large])  # noqa: E501
+            pt = pyx.text.text(XSTART, (YTXT - y) * YMUL, r"\font\cmssfont=cmss10\cmssfont{%s}" % tex_escape(proto.name), [pyx.text.size.Large])  # noqa: E501
             y += 1
             ptbb = pt.bbox()
             ptbb.enlarge(pyx.unit.u_pt * 2)
             canvas.stroke(ptbb.path(), [pyx.color.rgb.black, pyx.deco.filled([bkcol])])  # noqa: E501
             canvas.insert(pt)
-            for fname, fval, fdump in fields:
+            for field, fval, fdump in fields:
                 col = next(forecolor)
-                ft = pyx.text.text(XSTART, (YTXT - y) * YMUL, r"\font\cmssfont=cmss10\cmssfont{%s}" % tex_escape(fname.name))  # noqa: E501
+                ft = pyx.text.text(XSTART, (YTXT - y) * YMUL, r"\font\cmssfont=cmss10\cmssfont{%s}" % tex_escape(field.name))  # noqa: E501
+                if isinstance(field, BitField):
+                    fsize = '%sb' % field.size
+                else:
+                    fsize = '%sB' % len(fdump)
+                if (hasattr(field, 'field') and
+                        'LE' in field.field.__class__.__name__[:3] or
+                        'LE' in field.__class__.__name__[:3]):
+                    fsize = r'$\scriptstyle\langle$' + fsize
+                st = pyx.text.text(XSTART + 3.4, (YTXT - y) * YMUL, r"\font\cmbxfont=cmssbx10 scaled 600\cmbxfont{%s}" % fsize, [pyx.text.halign.boxright])  # noqa: E501
                 if isinstance(fval, str):
                     if len(fval) > 18:
                         fval = fval[:18] + "[...]"
                 else:
                     fval = ""
-                vt = pyx.text.text(XSTART + 3, (YTXT - y) * YMUL, r"\font\cmssfont=cmss10\cmssfont{%s}" % tex_escape(fval))  # noqa: E501
+                vt = pyx.text.text(XSTART + 3.5, (YTXT - y) * YMUL, r"\font\cmssfont=cmss10\cmssfont{%s}" % tex_escape(fval))  # noqa: E501
                 y += 1.0
                 if fdump:
                     dt, target, last_shift, last_y = make_dump(fdump, last_shift, last_y, col, bkcol)  # noqa: E501
@@ -724,7 +808,7 @@ class Packet(six.with_metaclass(Packet_metaclass, BasePacket)):
                             cnx = pyx.connector.curve(bxvt, bxdt, absangle1=0, absangle2=-90)  # noqa: E501
                         else:
                             cnx = pyx.connector.curve(bxvt, bxdt, absangle1=0, absangle2=90)  # noqa: E501
-                    except:
+                    except Exception:
                         pass
                     else:
                         canvas.stroke(cnx, [pyx.style.linewidth.thin, pyx.deco.earrow.small, col])  # noqa: E501
@@ -732,6 +816,7 @@ class Packet(six.with_metaclass(Packet_metaclass, BasePacket)):
                     canvas.insert(dt)
 
                 canvas.insert(ft)
+                canvas.insert(st)
                 canvas.insert(vt)
             last_y += layer_shift
 
@@ -789,7 +874,7 @@ class Packet(six.with_metaclass(Packet_metaclass, BasePacket)):
                 p = cls(s, _internal=1, _underlayer=self)
             except KeyboardInterrupt:
                 raise
-            except:
+            except Exception:
                 if conf.debug_dissector:
                     if issubtype(cls, Packet):
                         log_runtime.error("%s dissector failed" % cls.__name__)
@@ -1128,10 +1213,10 @@ values.
                                          ct.punct("="),)
                 reprval = f.i2repr(self, fvalue)
                 if isinstance(reprval, str):
-                    reprval = reprval.replace("\n", "\n" + " " * (len(label_lvl)  # noqa: E501
-                                                                  + len(lvl)
-                                                                  + len(f.name)
-                                                                  + 4))
+                    reprval = reprval.replace("\n", "\n" + " " * (len(label_lvl) +  # noqa: E501
+                                                                  len(lvl) +
+                                                                  len(f.name) +
+                                                                  4))
                 s += "%s%s\n" % (begn, vcol(reprval))
         if self.payload:
             s += self.payload._show_or_dump(dump=dump, indent=indent, lvl=lvl + (" " * indent * self.show_indent), label_lvl=label_lvl, first_call=False)  # noqa: E501
@@ -1246,7 +1331,7 @@ A side effect is that, to obtain "{" and "}" characters, you must use
                     cls, num = cls.split(":")
                     num = int(num)
                 fmt = fmt[i + 1:]
-            except:
+            except Exception:
                 raise Scapy_Exception("Bad format string [%%%s%s]" % (fmt[:25], fmt[25:] and "..."))  # noqa: E501
             else:
                 if fld == "time":
@@ -1322,10 +1407,15 @@ A side effect is that, to obtain "{" and "}" characters, you must use
         self.payload.dissection_done(pp)
 
     def command(self):
-        """Returns a string representing the command you have to type to obtain the same packet"""  # noqa: E501
+        """
+        Returns a string representing the command you have to type to
+        obtain the same packet
+        """
         f = []
         for fn, fv in self.fields.items():
             fld = self.get_field(fn)
+            if isinstance(fv, (list, dict, set)) and len(fv) == 0:
+                continue
             if isinstance(fv, Packet):
                 fv = fv.command()
             elif fld.islist and fld.holds_packets and isinstance(fv, list):
@@ -1603,23 +1693,153 @@ def split_layers(lower, upper, __fval=None, **fval):
 
 
 @conf.commands.register
+def explore(layer=None):
+    """Function used to discover the Scapy layers and protocols.
+    It helps to see which packets exists in contrib or layer files.
+
+    params:
+     - layer: If specified, the function will explore the layer. If not,
+              the GUI mode will be activated, to browse the available layers
+    """
+    if layer is None:  # GUI MODE
+        if not conf.interactive:
+            raise Scapy_Exception("explore() GUI-mode cannot be run in "
+                                  "interactive mode. Please provide a "
+                                  "'layer' parameter !")
+        # 0 - Imports
+        try:
+            import prompt_toolkit
+        except ImportError:
+            raise ImportError("prompt_toolkit is not installed ! "
+                              "You may install IPython, which contains it, via"
+                              " `pip install ipython`")
+        if not _version_checker(prompt_toolkit, (2, 0)):
+            raise ImportError("prompt_toolkit >= 2.0.0 is required !")
+        # Only available with prompt_toolkit > 2.0, not released on PyPi yet
+        from prompt_toolkit.shortcuts.dialogs import radiolist_dialog, \
+            yes_no_dialog
+        from prompt_toolkit.formatted_text import HTML
+        # 1 - Ask for layer or contrib
+        is_layer = yes_no_dialog(
+            title="Scapy v%s" % conf.version,
+            text=HTML(
+                six.text_type(
+                    '<style bg="white" fg="red">Chose the type of packets'
+                    ' you want to explore:</style>'
+                )
+            ),
+            yes_text=six.text_type("Layers"),
+            no_text=six.text_type("Contribs"))
+        # 2 - Retrieve list of Packets
+        if is_layer is True:
+            # Get all loaded layers
+            _radio_values = conf.layers.layers()
+            # Restrict to layers-only (not contribs) + packet.py and asn1*.py
+            _radio_values = [x for x in _radio_values if ("layers" in x[0] or
+                                                          "packet" in x[0] or
+                                                          "asn1" in x[0])]
+        elif is_layer is False:
+            # Get all existing contribs
+            from scapy.main import list_contrib
+            _radio_values = list_contrib(ret=True)
+            _radio_values = [(x['name'], x['description'])
+                             for x in _radio_values]
+            # Remove very specific modules
+            _radio_values = [x for x in _radio_values if not ("can" in x[0])]
+        else:
+            # Escape was pressed
+            return
+        # Python 2 compat
+        if six.PY2:
+            _radio_values = [(six.text_type(x), six.text_type(y))
+                             for x, y in _radio_values]
+        # 3 - Ask for the layer/contrib module to explore
+        result = radiolist_dialog(
+            values=_radio_values,
+            title="Scapy v%s" % conf.version,
+            text=HTML(
+                six.text_type(
+                    '<style bg="white" fg="red">Please select a layer among'
+                    ' the following, to see all packets contained in'
+                    ' it:</style>'
+                )
+            ))
+        if result is None:
+            return  # User pressed "Cancel"
+        # 4 - (Contrib only): load contrib
+        if not is_layer:
+            from scapy.main import load_contrib
+            load_contrib(result)
+            result = "scapy.contrib." + result
+    else:  # NON-GUI MODE
+        # We handle layer as a short layer name, full layer name
+        # or the module itself
+        if isinstance(layer, types.ModuleType):
+            layer = layer.__name__
+        if isinstance(layer, str):
+            if layer.startswith("scapy.layers."):
+                result = layer
+            else:
+                if layer.startswith("scapy.contrib."):
+                    layer = layer.replace("scapy.contrib.", "")
+                from scapy.main import load_contrib
+                load_contrib(layer)
+                result_layer, result_contrib = (("scapy.layers.%s" % layer),
+                                                ("scapy.contrib.%s" % layer))
+                if result_layer in conf.layers.ldict:
+                    result = result_layer
+                elif result_contrib in conf.layers.ldict:
+                    result = result_contrib
+                else:
+                    raise Scapy_Exception("Unknown scapy module '%s'" % layer)
+    # COMMON PART
+    # Get the list of all Packets contained in that module
+    try:
+        all_layers = conf.layers.ldict[result]
+    except KeyError:
+        raise Scapy_Exception("Unknown scapy module '%s'" % layer)
+    # Print
+    print(conf.color_theme.layer_name("Packets contained in %s:" % result))
+    rtlst = [(lay.__name__ or "", lay._name or "") for lay in all_layers]
+    print(pretty_list(rtlst, [("Class", "Name")], borders=True))
+
+
+@conf.commands.register
 def ls(obj=None, case_sensitive=False, verbose=False):
-    """List  available layers, or infos on a given layer class or name"""
+    """List  available layers, or infos on a given layer class or name.
+    params:
+     - obj: Packet / packet name to use
+     - case_sensitive: if obj is a string, is it case sensitive?
+     - verbose
+    """
     is_string = isinstance(obj, six.string_types)
 
     if obj is None or is_string:
+        tip = False
         if obj is None:
+            tip = True
             all_layers = sorted(conf.layers, key=lambda x: x.__name__)
         else:
             pattern = re.compile(obj, 0 if case_sensitive else re.I)
+            # We first order by accuracy, then length
+            if case_sensitive:
+                sorter = lambda x: (x.__name__.index(obj), len(x.__name__))
+            else:
+                obj = obj.lower()
+                sorter = lambda x: (x.__name__.lower().index(obj),
+                                    len(x.__name__))
             all_layers = sorted((layer for layer in conf.layers
-                                 if (isinstance(layer.name, str) and
-                                     pattern.search(layer.__name__))
-                                 or (isinstance(layer.name, str) and
+                                 if (isinstance(layer.__name__, str) and
+                                     pattern.search(layer.__name__)) or
+                                 (isinstance(layer.name, str) and
                                      pattern.search(layer.name))),
-                                key=lambda x: x.__name__)
+                                key=sorter)
         for layer in all_layers:
             print("%-10s : %s" % (layer.__name__, layer._name))
+        if tip and conf.interactive:
+            print()
+            print("TIP: You may use explore() to navigate through all "
+                  "layers using a clear GUI")
 
     else:
         is_pkt = isinstance(obj, Packet)

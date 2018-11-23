@@ -30,6 +30,12 @@ matrix:
             - TOXENV=py36-linux_non_root,codecov
 
         - os: linux
+          dist: xenial
+          python: 3.7
+          env:
+            - TOXENV=py37-linux_non_root,codecov
+
+        - os: linux
           python: pypy
           env:
             - TOXENV=pypy-linux_non_root,codecov
@@ -83,6 +89,13 @@ matrix:
           env:
             - TOXENV=py36-linux_root,codecov
 
+        - language: python
+          sudo: required
+          dist: xenial
+          python: 3.7
+          env:
+            - TOXENV=py37-linux_root,codecov
+
         - os: linux
           sudo: required
           python: 2.7
@@ -90,16 +103,23 @@ matrix:
             system_site_packages: true
           env:
             - SCAPY_SUDO=sudo SCAPY_USE_PCAPDNET=yes TOXENV=py27-pcapdnet_root,codecov
+        
+        - os: linux
+          sudo: required
+          python: 3.6
+          env:
+            - SCAPY_SUDO=sudo TOXENV=py36-isotp_kernel_module,codecov
 
         - os: osx
           language: generic
           env:
             - TOXENV=py27-osx_root,codecov
 
-        - os: osx
-          language: generic
-          env:
-            - SCAPY_SUDO=sudo SCAPY_USE_PCAPDNET=yes TOXENV=py27-pcapdnet_root,codecov
+        # FIXME - Networking with pcapdnet seem to be failing on OSX at the moment
+        #- os: osx
+        #  language: generic
+        #  env:
+        #    - SCAPY_SUDO=sudo SCAPY_USE_PCAPDNET=yes TOXENV=py27-pcapdnet_root,codecov
 
         - os: osx
           language: generic

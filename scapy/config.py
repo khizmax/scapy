@@ -168,11 +168,28 @@ class Num2Layer:
 
 class LayersList(list):
 
+    def __init__(self):
+        list.__init__(self)
+        self.ldict = {}
+
     def __repr__(self):
         return "\n".join("%-20s: %s" % (l.__name__, l.name) for l in self)
 
     def register(self, layer):
         self.append(layer)
+        if layer.__module__ not in self.ldict:
+            self.ldict[layer.__module__] = []
+        self.ldict[layer.__module__].append(layer)
+
+    def layers(self):
+        layers = self.ldict.keys()
+        result = []
+        # This import may feel useless, but it is required for the eval below
+        import scapy  # noqa: F401
+        for lay in layers:
+            doc = eval(lay).__doc__
+            result.append((lay, doc.strip().split("\n")[0] if doc else lay))
+        return result
 
 
 class CommandsList(list):
@@ -378,7 +395,7 @@ def isCryptographyAdvanced():
     try:
         from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey  # noqa: E501
         X25519PrivateKey.generate()
-    except:
+    except Exception:
         return False
     else:
         return True
@@ -387,7 +404,7 @@ def isCryptographyAdvanced():
 def isPyPy():
     """Returns either scapy is running under PyPy or not"""
     try:
-        import __pypy__
+        import __pypy__  # noqa: F401
         return True
     except ImportError:
         return False
@@ -397,7 +414,7 @@ def _prompt_changer(attr, val):
     """Change the current prompt theme"""
     try:
         sys.ps1 = conf.color_theme.prompt(conf.prompt)
-    except:
+    except Exception:
         pass
     try:
         apply_ipython_style(get_ipython())
@@ -467,6 +484,7 @@ recv_poll_rate: how often to check for new packets. Defaults to 0.05s.
     L2socket = None
     L2listen = None
     BTsocket = None
+    USBsocket = None
     min_pkt_size = 60
     histfile = os.getenv('SCAPY_HISTFILE',
                          os.path.join(os.path.expanduser("~"),

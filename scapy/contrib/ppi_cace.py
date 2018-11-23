@@ -14,18 +14,16 @@
 
 # author: <jellch@harris.com>
 
-# scapy.contrib.description = PPI CACE
+# scapy.contrib.description = Parallel Peripheral Interface CACE (PPI CACE)
 # scapy.contrib.status = loads
 
 """
 CACE PPI types
 """
-import logging
-import struct
-from scapy.config import conf
-from scapy.packet import *
-from scapy.fields import *
-from scapy.layers.l2 import Ether
+
+from scapy.packet import Packet
+from scapy.fields import ByteField, Field, FlagsField, LELongField, \
+    LEShortField
 from scapy.layers.ppi import addPPIType
 
 PPI_DOT11COMMON = 2

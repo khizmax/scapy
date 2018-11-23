@@ -15,6 +15,10 @@
 
 # Original PPI author: <jellch@harris.com>
 
+# scapy.contrib.description = Parallel Peripheral Interface (PPI)
+# scapy.contrib.status = loads
+
+
 """
 Per-Packet Information (PPI) Protocol
 """
@@ -24,7 +28,8 @@ import struct
 from scapy.config import conf
 from scapy.data import DLT_EN10MB, DLT_IEEE802_11, DLT_PPI
 from scapy.packet import bind_layers, Packet
-from scapy.fields import *
+from scapy.fields import ByteField, FieldLenField, LEIntField, \
+    LEShortField, PacketListField, StrLenField
 from scapy.layers.l2 import Ether
 from scapy.layers.dot11 import Dot11
 

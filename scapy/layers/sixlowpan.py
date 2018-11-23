@@ -5,15 +5,14 @@
 # Intern at INRIA Grand Nancy Est
 # This program is published under a GPLv2 license
 """
+6LoWPAN Protocol Stack
+======================
 
 This implementation follows the next documents:
     * Transmission of IPv6 Packets over IEEE 802.15.4 Networks
     * Compression Format for IPv6 Datagrams in Low Power and Lossy
       networks (6LoWPAN): draft-ietf-6lowpan-hc-15
     * RFC 4291
-
-6LoWPAN Protocol Stack
-======================
 
                             |-----------------------|
 Application                 | Application Protocols |
@@ -53,22 +52,19 @@ import struct
 from scapy.compat import chb, orb, raw
 
 from scapy.packet import Packet, bind_layers
-from scapy.fields import BitField, ByteField, XBitField, LEShortField, \
-    LEIntField, StrLenField, BitEnumField, Field, ShortField, \
-    BitFieldLenField, XShortField, FlagsField, StrField, ConditionalField, \
-    FieldLenField
+from scapy.fields import BitField, ByteField, BitEnumField, BitFieldLenField, \
+    XShortField, FlagsField, ConditionalField, FieldLenField
 
-from scapy.layers.dot15d4 import Dot15d4, Dot15d4Data, Dot15d4FCS, dot15d4AddressField  # noqa: E501
-from scapy.layers.inet6 import IPv6, IP6Field, ICMPv6EchoRequest
+from scapy.layers.dot15d4 import Dot15d4Data
+from scapy.layers.inet6 import IPv6, IP6Field
 from scapy.layers.inet import UDP
-from scapy.utils6 import in6_or, in6_and, in6_xor
 
-from scapy.utils import lhex, hexdump
-
-from scapy.route6 import *
+from scapy.utils import lhex
+from scapy.config import conf
+from scapy.error import warning
 
 from scapy.packet import Raw
-from scapy.pton_ntop import *
+from scapy.pton_ntop import inet_pton, inet_ntop
 from scapy.volatile import RandShort
 
 LINK_LOCAL_PREFIX = b"\xfe\x80\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00"  # noqa: E501
@@ -83,18 +79,19 @@ class IP6FieldLenField(IP6Field):
 
     def addfield(self, pkt, s, val):
         """Add an internal value  to a string"""
-        l = self.length_of(pkt)
-        if l == 0:
+        tmp_len = self.length_of(pkt)
+        if tmp_len == 0:
             return s
-        internal = self.i2m(pkt, val)[-l:]
-        return s + struct.pack("!%ds" % l, internal)
+        internal = self.i2m(pkt, val)[-tmp_len:]
+        return s + struct.pack("!%ds" % tmp_len, internal)
 
     def getfield(self, pkt, s):
-        l = self.length_of(pkt)
-        assert l >= 0 and l <= 16
-        if l <= 0:
+        tmp_len = self.length_of(pkt)
+        assert tmp_len >= 0 and tmp_len <= 16
+        if tmp_len <= 0:
             return s, b""
-        return s[l:], self.m2i(pkt, b"\x00" * (16 - l) + s[:l])
+        return (s[tmp_len:],
+                self.m2i(pkt, b"\x00" * (16 - tmp_len) + s[:tmp_len]))
 
 
 class BitVarSizeField(BitField):

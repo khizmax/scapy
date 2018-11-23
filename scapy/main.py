@@ -13,7 +13,6 @@ from __future__ import print_function
 import sys
 import os
 import getopt
-import re
 import code
 import gzip
 import glob
@@ -25,7 +24,7 @@ import io
 
 # Never add any global import, in main.py, that would trigger a warning message  # noqa: E501
 # before the console handlers gets added in interact()
-from scapy.error import log_interactive, log_loading, log_scapy, warning
+from scapy.error import log_interactive, log_loading, log_scapy
 import scapy.modules.six as six
 from scapy.themes import DefaultTheme, BlackAndWhite, apply_ipython_style
 from scapy.consts import WINDOWS
@@ -179,18 +178,27 @@ def load_contrib(name, globals_dict=None, symb_list=None):
         importlib.import_module("scapy.contrib." + name)
         _load("scapy.contrib." + name,
               globals_dict=globals_dict, symb_list=symb_list)
-    except ImportError:
+    except ImportError as e:
         # if layer not found in contrib, try in layers
-        load_layer(name,
-                   globals_dict=globals_dict, symb_list=symb_list)
+        try:
+            load_layer(name,
+                       globals_dict=globals_dict, symb_list=symb_list)
+        except ImportError:
+            raise e  # Let's raise the original error to avoid confusion
 
 
-def list_contrib(name=None):
+def list_contrib(name=None, ret=False):
+    """Show the list of all existing contribs.
+    Params:
+     - name: filter to search the contribs
+     - ret: whether the function should return a dict instead of printing it
+    """
     if name is None:
         name = "*.py"
     elif "*" not in name and "?" not in name and not name.endswith(".py"):
         name += ".py"
     name = os.path.join(os.path.dirname(__file__), "contrib", name)
+    results = []
     for f in sorted(glob.glob(name)):
         mod = os.path.basename(f)
         if mod.startswith("__"):
@@ -206,7 +214,12 @@ def list_contrib(name=None):
                 key = l[p:q].strip()
                 value = l[q + 1:].strip()
                 desc[key] = value
-        print("%(name)-20s: %(description)-40s status=%(status)s" % desc)
+        results.append(desc)
+    if ret:
+        return results
+    else:
+        for desc in results:
+            print("%(name)-20s: %(description)-40s status=%(status)s" % desc)
 
 
 ##############################
@@ -218,7 +231,7 @@ def update_ipython_session(session):
     try:
         global get_ipython
         get_ipython().user_ns.update(session)
-    except:
+    except Exception:
         pass
 
 
@@ -239,7 +252,7 @@ def save_session(fname=None, session=None, pickleProto=-1):
     if session is None:
         try:
             session = get_ipython().user_ns
-        except:
+        except Exception:
             session = six.moves.builtins.__dict__["scapy_session"]
 
     to_be_saved = session.copy()
@@ -317,7 +330,7 @@ def init_session(session_name, mydict=None):
     six.moves.builtins.__dict__.update(scapy_builtins)
     GLOBKEYS.extend(scapy_builtins)
     GLOBKEYS.append("scapy_session")
-    scapy_builtins = None  # XXX replace with "with" statement
+    scapy_builtins = None
 
     if session_name:
         try:
@@ -365,7 +378,7 @@ def scapy_delete_temp_files():
     for f in conf.temp_files:
         try:
             os.unlink(f)
-        except:
+        except Exception:
             pass
     del(conf.temp_files[:])
 
@@ -540,7 +553,7 @@ def interact(mydict=None, argv=None, mybanner=None, loglevel=20):
                     user_ns=SESSION,
                     exec_lines=["print(\"\"\"" + banner + "\"\"\")"]
                 )
-            except:
+            except Exception:
                 code.interact(banner=the_banner, local=SESSION)
         else:
             cfg = Config()
@@ -553,7 +566,7 @@ def interact(mydict=None, argv=None, mybanner=None, loglevel=20):
                 cfg.TerminalInteractiveShell.confirm_exit = False
                 cfg.TerminalInteractiveShell.separate_in = u''
             if int(IPython.__version__[0]) >= 6:
-                cfg.TerminalInteractiveShell.term_title_format = "Scapy v" + conf.version  # noqa: E501
+                cfg.TerminalInteractiveShell.term_title_format = "Scapy v%s" % conf.version  # noqa: E501
             else:
                 cfg.TerminalInteractiveShell.term_title = False
             cfg.HistoryAccessor.hist_file = conf.histfile
@@ -572,7 +585,7 @@ def interact(mydict=None, argv=None, mybanner=None, loglevel=20):
     for k in GLOBKEYS:
         try:
             del(six.moves.builtins.__dict__[k])
-        except:
+        except Exception:
             pass
 
 

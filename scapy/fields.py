@@ -18,7 +18,9 @@ import time
 
 from scapy.config import conf
 from scapy.dadict import DADict
-from scapy.volatile import RandBin, RandByte, RandEnumKeys, RandInt, RandIP, RandIP6, RandLong, RandMAC, RandNum, RandShort, RandSInt, RandTermString, VolatileValue  # noqa: E501
+from scapy.volatile import RandBin, RandByte, RandEnumKeys, RandInt, \
+    RandIP, RandIP6, RandLong, RandMAC, RandNum, RandShort, RandSInt, \
+    RandSByte, RandTermString, VolatileValue
 from scapy.data import EPOCH
 from scapy.error import log_runtime, Scapy_Exception
 from scapy.compat import bytes_hex, chb, orb, plain_str, raw
@@ -166,10 +168,10 @@ class Field(six.with_metaclass(Field_metaclass, object)):
             return {"B": RandByte, "H": RandShort, "I": RandInt, "Q": RandLong}[fmtt]()  # noqa: E501
         elif fmtt == "s":
             if self.fmt[0] in "0123456789":
-                l = int(self.fmt[:-1])
+                value = int(self.fmt[:-1])
             else:
-                l = int(self.fmt[1:-1])
-            return RandBin(l)
+                value = int(self.fmt[1:-1])
+            return RandBin(value)
         else:
             warning("no random class for [%s] (fmt=%s).", self.name, self.fmt)
 
@@ -465,7 +467,7 @@ class IPField(Field):
         if self in conf.resolve:
             try:
                 ret = socket.gethostbyaddr(x)[0]
-            except:
+            except Exception:
                 pass
             else:
                 if ret:
@@ -501,7 +503,7 @@ class SourceIPField(IPField):
     def __findaddr(self, pkt):
         if conf.route is None:
             # unused import, only to initialize conf.route
-            import scapy.route
+            import scapy.route  # noqa: F401
         dst = ("0.0.0.0" if self.dstname is None
                else getattr(pkt, self.dstname) or "0.0.0.0")
         if isinstance(dst, (Gen, list)):
@@ -584,7 +586,7 @@ class SourceIP6Field(IP6Field):
         if x is None:
             if conf.route6 is None:
                 # unused import, only to initialize conf.route6
-                import scapy.route6
+                import scapy.route6  # noqa: F401
             dst = ("::" if self.dstname is None else getattr(pkt, self.dstname))  # noqa: E501
             if isinstance(dst, (Gen, list)):
                 r = {conf.route6.route(str(daddr)) for daddr in dst}
@@ -664,6 +666,9 @@ class LEX3BytesField(LEThreeBytesField, XByteField):
 class SignedByteField(Field):
     def __init__(self, name, default):
         Field.__init__(self, name, default, "b")
+
+    def randval(self):
+        return RandSByte()
 
 
 class FieldValueRangeException(Scapy_Exception):
@@ -853,6 +858,11 @@ class XLongField(LongField):
         return lhex(self.i2h(pkt, x))
 
 
+class XLELongField(LELongField, XLongField):
+    def i2repr(self, pkt, x):
+        return XLongField.i2repr(self, pkt, x)
+
+
 class IEEEFloatField(Field):
     def __init__(self, name, default):
         Field.__init__(self, name, default, "f")
@@ -938,14 +948,14 @@ class PacketLenField(PacketField):
         self.length_from = length_from
 
     def getfield(self, pkt, s):
-        l = self.length_from(pkt)
+        len_pkt = self.length_from(pkt)
         try:
-            i = self.m2i(pkt, s[:l])
+            i = self.m2i(pkt, s[:len_pkt])
         except Exception:
             if conf.debug_dissector:
                 raise
-            i = conf.raw_layer(load=s[:l])
-        return s[l:], i
+            i = conf.raw_layer(load=s[:len_pkt])
+        return s[len_pkt:], i
 
 
 class PacketListField(PacketField):
@@ -1040,9 +1050,9 @@ class PacketListField(PacketField):
             return [p if isinstance(p, six.string_types) else p.copy() for p in x]  # noqa: E501
 
     def getfield(self, pkt, s):
-        c = l = cls = None
+        c = len_pkt = cls = None
         if self.length_from is not None:
-            l = self.length_from(pkt)
+            len_pkt = self.length_from(pkt)
         elif self.count_from is not None:
             c = self.count_from(pkt)
         if self.next_cls_cb is not None:
@@ -1052,8 +1062,8 @@ class PacketListField(PacketField):
         lst = []
         ret = b""
         remain = s
-        if l is not None:
-            remain, ret = s[:l], s[l:]
+        if len_pkt is not None:
+            remain, ret = s[:len_pkt], s[len_pkt:]
         while remain:
             if c is not None:
                 if c <= 0:
@@ -1102,19 +1112,19 @@ class StrFixedLenField(StrField):
         return super(StrFixedLenField, self).i2repr(pkt, v)
 
     def getfield(self, pkt, s):
-        l = self.length_from(pkt)
-        return s[l:], self.m2i(pkt, s[:l])
+        len_pkt = self.length_from(pkt)
+        return s[len_pkt:], self.m2i(pkt, s[:len_pkt])
 
     def addfield(self, pkt, s, val):
-        l = self.length_from(pkt)
-        return s + struct.pack("%is" % l, self.i2m(pkt, val))
+        len_pkt = self.length_from(pkt)
+        return s + struct.pack("%is" % len_pkt, self.i2m(pkt, val))
 
     def randval(self):
         try:
-            l = self.length_from(None)
-        except:
-            l = RandNum(0, 200)
-        return RandBin(l)
+            len_pkt = self.length_from(None)
+        except Exception:
+            len_pkt = RandNum(0, 200)
+        return RandBin(len_pkt)
 
 
 class StrFixedLenEnumField(StrFixedLenField):
@@ -1139,12 +1149,12 @@ class NetBIOSNameField(StrFixedLenField):
         StrFixedLenField.__init__(self, name, default, length)
 
     def i2m(self, pkt, x):
-        l = self.length_from(pkt) // 2
+        len_pkt = self.length_from(pkt) // 2
         x = raw(x)
         if x is None:
             x = b""
-        x += b" " * (l)
-        x = x[:l]
+        x += b" " * len_pkt
+        x = x[:len_pkt]
         x = b"".join(chb(0x41 + (orb(b) >> 4)) + chb(0x41 + (orb(b) & 0xf)) for b in x)  # noqa: E501
         x = b" " + x
         return x
@@ -1163,8 +1173,8 @@ class StrLenField(StrField):
         self.max_length = max_length
 
     def getfield(self, pkt, s):
-        l = self.length_from(pkt)
-        return s[l:], self.m2i(pkt, s[:l])
+        len_pkt = self.length_from(pkt)
+        return s[len_pkt:], self.m2i(pkt, s[:len_pkt])
 
     def randval(self):
         return RandBin(RandNum(0, self.max_length or 1200))
@@ -1264,16 +1274,16 @@ class FieldListField(Field):
         return s
 
     def getfield(self, pkt, s):
-        c = l = None
+        c = len_pkt = None
         if self.length_from is not None:
-            l = self.length_from(pkt)
+            len_pkt = self.length_from(pkt)
         elif self.count_from is not None:
             c = self.count_from(pkt)
 
         val = []
         ret = b""
-        if l is not None:
-            s, ret = s[:l], s[l:]
+        if len_pkt is not None:
+            s, ret = s[:len_pkt], s[len_pkt:]
 
         while s:
             if c is not None:
@@ -1314,11 +1324,11 @@ class StrNullField(StrField):
         return s + self.i2m(pkt, val) + b"\x00"
 
     def getfield(self, pkt, s):
-        l = s.find(b"\x00")
-        if l < 0:
+        len_str = s.find(b"\x00")
+        if len_str < 0:
             # XXX \x00 not found
             return b"", s
-        return s[l + 1:], self.m2i(pkt, s[:l])
+        return s[len_str + 1:], self.m2i(pkt, s[:len_str])
 
     def randval(self):
         return RandTermString(RandNum(0, 1200), b"\x00")
@@ -1333,12 +1343,12 @@ class StrStopField(StrField):
         self.additional = additional
 
     def getfield(self, pkt, s):
-        l = s.find(self.stop)
-        if l < 0:
+        len_str = s.find(self.stop)
+        if len_str < 0:
             return b"", s
 #            raise Scapy_Exception,"StrStopField: stop value [%s] not found" %stop  # noqa: E501
-        l += len(self.stop) + self.additional
-        return s[l:], s[:l]
+        len_str += len(self.stop) + self.additional
+        return s[len_str:], s[:len_str]
 
     def randval(self):
         return RandTermString(RandNum(0, 1200), self.stop)
@@ -1731,6 +1741,8 @@ class FlagValue(object):
     __slots__ = ["value", "names", "multi"]
 
     def _fixvalue(self, value):
+        if not value:
+            return 0
         if isinstance(value, six.string_types):
             value = value.split('+') if self.multi else list(value)
         if isinstance(value, list):
@@ -1738,7 +1750,7 @@ class FlagValue(object):
             for i in value:
                 y |= 1 << self.names.index(i)
             value = y
-        return None if value is None else int(value)
+        return int(value)
 
     def __init__(self, value, names):
         self.multi = isinstance(names, list)

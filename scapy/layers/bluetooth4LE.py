@@ -6,21 +6,23 @@
 
 """Bluetooth 4LE layer"""
 
-import socket
 import struct
 
 from scapy.compat import orb, chb
 from scapy.config import conf
-from scapy.data import MTU, DLT_BLUETOOTH_LE_LL, DLT_BLUETOOTH_LE_LL_WITH_PHDR
-from scapy.packet import *
-from scapy.fields import *
+from scapy.data import DLT_BLUETOOTH_LE_LL, DLT_BLUETOOTH_LE_LL_WITH_PHDR
+from scapy.packet import Packet, bind_layers
+from scapy.fields import BitEnumField, BitField, ByteEnumField, ByteField, \
+    Field, FlagsField, LEIntField, LEShortEnumField, LEShortField, MACField, \
+    PacketListField, X3BytesField, XBitField, XByteField, XIntField, \
+    XShortField, XLEIntField, XLEShortField
 from scapy.layers.dot11 import _dbmField
 from scapy.layers.ppi import PPI, addPPIType, PPIGenericFldHdr
 
-from scapy.contrib.ppi_geotag import XLEIntField, XLEShortField
 from scapy.layers.bluetooth import EIR_Hdr, L2CAP_Hdr
 
 from scapy.modules.six.moves import range
+from scapy.utils import mac2str, str2mac
 
 ####################
 # Transport Layers #
@@ -175,10 +177,10 @@ class BTLE_ADV(Packet):
         p += pay
         if self.Length is None:
             if len(pay) > 2:
-                l = len(pay)
+                l_pay = len(pay)
             else:
-                l = 0
-            p = p[:1] + chb(l & 0x3f) + p[2:]
+                l_pay = 0
+            p = p[:1] + chb(l_pay & 0x3f) + p[2:]
         if not isinstance(self.underlayer, BTLE):
             self.add_underlayer(BTLE)
         return p

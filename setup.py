@@ -44,7 +44,7 @@ archive_util.ARCHIVE_FORMATS["ezip"] = (
 def get_long_description():
     try:
         with io.open(os.path.join(os.path.dirname(__file__), "README.md"), encoding="utf-8") as f:
-            return f.read().partition("[//]: # (stop_pypi_description)")[0]
+            return f.read().partition("<!--- stop_ppi_description -->")[0]
     except IOError:
         return None
 
@@ -109,6 +109,7 @@ setup(
         "Programming Language :: Python :: 3.4",
         "Programming Language :: Python :: 3.5",
         "Programming Language :: Python :: 3.6",
+        "Programming Language :: Python :: 3.7",
         "Topic :: Security",
         "Topic :: System :: Networking",
         "Topic :: System :: Networking :: Monitoring",

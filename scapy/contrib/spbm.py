@@ -17,7 +17,7 @@
 # https://en.wikipedia.org/wiki/IEEE_802.1aq
 # Modeled after the scapy VXLAN contribution
 
-# scapy.contrib.description = SBPM
+# scapy.contrib.description = Shorest Path Bridging Mac-in-mac (SBPM)
 # scapy.contrib.status = loads
 
 """
@@ -37,7 +37,7 @@
 """
 
 from scapy.packet import Packet, bind_layers
-from scapy.fields import *
+from scapy.fields import BitField, ThreeBytesField
 from scapy.layers.l2 import Ether, Dot1Q
 
 

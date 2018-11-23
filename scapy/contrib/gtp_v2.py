@@ -17,12 +17,10 @@
 # You should have received a copy of the GNU General Public License
 # along with Scapy. If not, see <http://www.gnu.org/licenses/>.
 
-# scapy.contrib.description = GTPv2
+# scapy.contrib.description = GPRS Tunneling Protocol v2 (GTPv2)
 # scapy.contrib.status = loads
 
-import logging
 import struct
-import time
 
 
 from scapy.compat import orb
@@ -30,8 +28,6 @@ from scapy.fields import BitEnumField, BitField, ByteEnumField, ByteField, \
     ConditionalField, IntField, IPField, LongField, PacketField, \
     PacketListField, ShortEnumField, ShortField, StrFixedLenField, \
     StrLenField, ThreeBytesField, XBitField, XIntField, XShortField
-from scapy.layers.inet import IP, UDP
-from scapy.layers.inet6 import IP6Field
 from scapy.packet import bind_layers, Packet, Raw
 from scapy.volatile import RandIP, RandShort
 
@@ -112,8 +108,8 @@ class GTPHeader(Packet):
     def post_build(self, p, pay):
         p += pay
         if self.length is None:
-            l = len(p) - 8
-            p = p[:2] + struct.pack("!H", l) + p[4:]
+            tmp_len = len(p) - 8
+            p = p[:2] + struct.pack("!H", tmp_len) + p[4:]
         return p
 
     def hashret(self):

@@ -3,6 +3,8 @@
 # Copyright (C) Nils Weiss <nils@we155.de>
 # This program is published under a GPLv2 license
 
+# scapy.contrib.description = Python-Can CANSocket
+# scapy.contrib.status = loads
 
 """
 Python-CAN CANSocket Wrapper.
@@ -26,6 +28,7 @@ class CANSocketTimeoutElapsed(Scapy_Exception):
 
 
 class CANSocket(SuperSocket):
+    read_allowed_exceptions = (CANSocketTimeoutElapsed,)
     desc = "read/write packets at a given CAN interface " \
            "using a python-can bus object"
 
@@ -69,11 +72,13 @@ class CANSocket(SuperSocket):
             raise ex
 
     @staticmethod
-    def is_python_can_socket():
-        """Function used to determine if a socket is a python-can CANSocket.
-        This is used from sendrecv, to determine if a non standard _get_pkt()
-        and _select() function needs to be used."""
-        return True
+    def select(sockets, remain=None):
+        """This function is called during sendrecv() routine to select
+        the available sockets.
+        """
+        # python-can sockets aren't selectable, so we return all of them
+        # sockets, None (means use the socket's recv() )
+        return sockets, None
 
 
 @conf.commands.register

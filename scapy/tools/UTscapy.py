@@ -60,7 +60,7 @@ def import_module(name):
         name = name[:-3]
     try:
         return importlib.import_module(name, package="scapy")
-    except:
+    except Exception:
         return importlib.import_module(name)
 
 
@@ -877,8 +877,10 @@ def main(argv):
             print("### Booting scapy...", file=sys.stderr)
         try:
             from scapy import all as scapy
-        except ImportError as e:
-            raise getopt.GetoptError("cannot import [%s]: %s" % (SCAPY, e))
+        except Exception as e:
+            print("[CRITICAL]: Cannot import Scapy: %s" % e, file=sys.stderr)
+            traceback.print_exc()
+            sys.exit(1)  # Abort the tests
 
         for m in MODULES:
             try:
@@ -954,13 +956,16 @@ def main(argv):
     if FORMAT == Format.HTML:
         glob_output = pack_html_campaigns(runned_campaigns, glob_output, LOCAL, glob_title)
 
+    # Write the final output
+    # Note: on Python 2, we force-encode to ignore ascii errors
+    # on Python 3, we need to detect the type of stream
     if OUTPUTFILE == sys.stdout:
         OUTPUTFILE.write(glob_output.encode("utf8", "ignore")
-                         if 'b' in OUTPUTFILE.mode else glob_output)
+                         if 'b' in OUTPUTFILE.mode or six.PY2 else glob_output)
     else:
         with open(OUTPUTFILE, "wb") as f:
             f.write(glob_output.encode("utf8", "ignore")
-                    if 'b' in f.mode else glob_output)
+                    if 'b' in f.mode or six.PY2 else glob_output)
 
     # Delete scapy's test environment vars
     del os.environ['SCAPY_ROOT_DIR']

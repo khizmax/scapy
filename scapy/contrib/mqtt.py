@@ -3,6 +3,8 @@
 # Copyright (C) Santiago Hernandez Ramos <shramos@protonmail.com>
 # This program is published under GPLv2 license
 
+# scapy.contrib.description = Message Queuing Telemetry Transport (MQTT)
+# scapy.contrib.status = loads
 
 from scapy.packet import Packet, bind_layers
 from scapy.fields import FieldLenField, BitEnumField, StrLenField, \
@@ -167,8 +169,8 @@ class MQTTPublish(Packet):
         StrLenField("topic", "",
                     length_from=lambda pkt: pkt.length),
         ConditionalField(ShortField("msgid", None),
-                         lambda pkt: (pkt.underlayer.QOS == 1
-                                      or pkt.underlayer.QOS == 2)),
+                         lambda pkt: (pkt.underlayer.QOS == 1 or
+                                      pkt.underlayer.QOS == 2)),
         StrLenField("value", "",
                     length_from=lambda pkt: (pkt.underlayer.len -
                                              pkt.length - 2)),

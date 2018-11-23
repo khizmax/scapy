@@ -9,26 +9,31 @@ DHCP (Dynamic Host Configuration Protocol) and BOOTP
 
 from __future__ import absolute_import
 from __future__ import print_function
-from collections import Iterable
+try:
+    from collections.abc import Iterable
+except ImportError:
+    # For backwards compatibility.  This was removed in Python 3.8
+    from collections import Iterable
 import random
 import struct
 
 from scapy.ansmachine import AnsweringMachine
 from scapy.base_classes import Net
-from scapy.data import chb, orb, raw
+from scapy.compat import chb, orb, raw
 from scapy.fields import ByteEnumField, ByteField, Field, FieldListField, \
     FlagsField, IntField, IPField, ShortField, StrField
 from scapy.layers.inet import UDP, IP
 from scapy.layers.l2 import Ether
-from scapy.packet import bind_layers, bind_bottom_up
+from scapy.packet import bind_layers, bind_bottom_up, Packet
 from scapy.utils import atol, itom, ltoa, sane
 from scapy.volatile import RandBin, RandField, RandNum, RandNumExpo
 
 from scapy.arch import get_if_raw_hwaddr
-from scapy.sendrecv import *
+from scapy.sendrecv import srp1, sendp
 from scapy.error import warning
 import scapy.modules.six as six
 from scapy.modules.six.moves import range
+from scapy.config import conf
 
 dhcpmagic = b"c\x82Sc"
 
@@ -248,7 +253,7 @@ class DHCPOptionsField(StrField):
                         while left:
                             left, val = f.getfield(pkt, left)
                             lval.append(val)
-                    except:
+                    except Exception:
                         opt.append(x)
                         break
                     else:
@@ -318,8 +323,8 @@ def dhcp_request(iface=None, **kargs):
     if iface is None:
         iface = conf.iface
     fam, hw = get_if_raw_hwaddr(iface)
-    return srp1(Ether(dst="ff:ff:ff:ff:ff:ff") / IP(src="0.0.0.0", dst="255.255.255.255") / UDP(sport=68, dport=67)  # noqa: E501
-                / BOOTP(chaddr=hw) / DHCP(options=[("message-type", "discover"), "end"]), iface=iface, **kargs)  # noqa: E501
+    return srp1(Ether(dst="ff:ff:ff:ff:ff:ff") / IP(src="0.0.0.0", dst="255.255.255.255") / UDP(sport=68, dport=67) /  # noqa: E501
+                BOOTP(chaddr=hw) / DHCP(options=[("message-type", "discover"), "end"]), iface=iface, **kargs)  # noqa: E501
 
 
 class BOOTP_am(AnsweringMachine):
@@ -360,7 +365,7 @@ class BOOTP_am(AnsweringMachine):
         print("Reply %s to %s" % (reply.getlayer(IP).dst, reply.dst))
 
     def make_reply(self, req):
-        mac = req.src
+        mac = req[Ether].src
         if isinstance(self.pool, list):
             if mac not in self.leases:
                 self.leases[mac] = self.pool.pop()

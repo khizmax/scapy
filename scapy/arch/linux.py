@@ -11,24 +11,23 @@ from __future__ import absolute_import
 
 
 import array
-import ctypes
 from fcntl import ioctl
 import os
 from select import select
 import socket
 import struct
-import sys
 import time
+import re
 
 import subprocess
 
-from scapy.compat import *
-from scapy.consts import LOOPBACK_NAME, IS_64BITS, LINUX
+from scapy.compat import raw, plain_str
+from scapy.consts import LOOPBACK_NAME, LINUX
 import scapy.utils
 import scapy.utils6
 from scapy.packet import Packet, Padding
 from scapy.config import conf
-from scapy.data import *
+from scapy.data import MTU, ETH_P_ALL
 from scapy.supersocket import SuperSocket
 import scapy.arch
 from scapy.error import warning, Scapy_Exception, log_interactive, log_loading
@@ -123,9 +122,9 @@ def get_if_list():
     lst = []
     f.readline()
     f.readline()
-    for l in f:
-        l = plain_str(l)
-        lst.append(l.split(":")[0].strip())
+    for line in f:
+        line = plain_str(line)
+        lst.append(line.split(":")[0].strip())
     f.close()
     return lst
 
@@ -150,7 +149,7 @@ def attach_filter(s, bpf_filter, iface):
     if not TCPDUMP:
         return
     try:
-        f = os.popen("%s -i %s -ddd -s %d '%s'" % (
+        f = os.popen("%s -p -i %s -ddd -s %d '%s'" % (
             conf.prog.tcpdump,
             conf.iface if iface is None else iface,
             MTU,
@@ -257,9 +256,9 @@ def read_routes():
         else:
             warning("Interface %s: failed to get address config (%s)" % (scapy.consts.LOOPBACK_NAME, str(err)))  # noqa: E501
 
-    for l in f.readlines()[1:]:
-        l = plain_str(l)
-        iff, dst, gw, flags, x, x, metric, msk, x, x, x = l.split()
+    for line in f.readlines()[1:]:
+        line = plain_str(line)
+        iff, dst, gw, flags, _, _, metric, msk, _, _, _ = line.split()
         flags = int(flags, 16)
         if flags & RTF_UP == 0:
             continue
@@ -355,9 +354,9 @@ def read_routes6():
         return scapy.utils6.in6_ptop(ret)
 
     lifaddr = in6_getifaddr()
-    for l in f.readlines():
-        l = plain_str(l)
-        d, dp, s, sp, nh, metric, rc, us, fl, dev = l.split()
+    for line in f.readlines():
+        line = plain_str(line)
+        d, dp, s, sp, nh, metric, rc, us, fl, dev = line.split()
         metric = int(metric, 16)
         fl = int(fl, 16)
 

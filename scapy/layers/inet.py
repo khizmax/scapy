@@ -9,32 +9,37 @@ IPv4 (Internet Protocol v4).
 
 from __future__ import absolute_import
 from __future__ import print_function
-import os
 import time
 import struct
 import re
+import random
 import socket
-import types
 from select import select
 from collections import defaultdict
 
-from scapy.utils import checksum, do_graph, incremental_label, inet_aton, \
-    inet_ntoa, linehexdump, strxor
-from scapy.base_classes import Gen
-from scapy.data import *
-from scapy.layers.l2 import *
-from scapy.compat import *
+from scapy.utils import checksum, do_graph, incremental_label, \
+    linehexdump, strxor, whois, colgen
+from scapy.base_classes import Gen, Net
+from scapy.data import ETH_P_IP, ETH_P_ALL, DLT_RAW, DLT_RAW_ALT, DLT_IPV4, \
+    IP_PROTOS, TCP_SERVICES, UDP_SERVICES
+from scapy.layers.l2 import Ether, Dot3, getmacbyip, CookedLinux, GRE, SNAP, \
+    Loopback
+from scapy.compat import raw, chb, orb
 from scapy.config import conf
-from scapy.arch import WINDOWS
-from scapy.extlib import plt, MATPLOTLIB, MATPLOTLIB_INLINED, MATPLOTLIB_DEFAULT_PLOT_KARGS  # noqa: E501
-from scapy.fields import *
-from scapy.packet import *
-from scapy.volatile import *
-from scapy.sendrecv import sr, sr1, srp1
+from scapy.extlib import plt, MATPLOTLIB, MATPLOTLIB_INLINED, \
+    MATPLOTLIB_DEFAULT_PLOT_KARGS
+from scapy.fields import ConditionalField, IPField, BitField, BitEnumField, \
+    FieldLenField, StrLenField, ByteField, ShortField, ByteEnumField, \
+    DestField, FieldListField, FlagsField, IntField, MultiEnumField, \
+    PacketListField, ShortEnumField, SourceIPField, StrField, \
+    StrFixedLenField, XByteField, XShortField, Emph
+from scapy.packet import Packet, bind_layers, NoPayload
+from scapy.volatile import RandShort, RandInt
+from scapy.sendrecv import sr, sr1
 from scapy.plist import PacketList, SndRcvList
 from scapy.automaton import Automaton, ATMT
 from scapy.error import warning
-from scapy.utils import whois
+from scapy.pton_ntop import inet_pton
 
 import scapy.as_resolvers
 
@@ -418,16 +423,18 @@ class IP(Packet, IPTools):
             ihl = len(p) // 4
             p = chb(((self.version & 0xf) << 4) | ihl & 0x0f) + p[1:]
         if self.len is None:
-            l = len(p) + len(pay)
-            p = p[:2] + struct.pack("!H", l) + p[4:]
+            tmp_len = len(p) + len(pay)
+            p = p[:2] + struct.pack("!H", tmp_len) + p[4:]
         if self.chksum is None:
             ck = checksum(p)
             p = p[:10] + chb(ck >> 8) + chb(ck & 0xff) + p[12:]
         return p + pay
 
     def extract_padding(self, s):
-        l = self.len - (self.ihl << 2)
-        return s[:l], s[l:]
+        tmp_len = self.len - (self.ihl << 2)
+        if tmp_len < 0:
+            return s, b""
+        return s[:tmp_len], s[tmp_len:]
 
     def route(self):
         dst = self.dst
@@ -435,13 +442,13 @@ class IP(Packet, IPTools):
             dst = next(iter(dst))
         if conf.route is None:
             # unused import, only to initialize conf.route
-            import scapy.route
+            import scapy.route  # noqa: F401
         return conf.route.route(dst)
 
     def hashret(self):
-        if ((self.proto == socket.IPPROTO_ICMP)
-            and (isinstance(self.payload, ICMP))
-                and (self.payload.type in [3, 4, 5, 11, 12])):
+        if ((self.proto == socket.IPPROTO_ICMP) and
+            (isinstance(self.payload, ICMP)) and
+                (self.payload.type in [3, 4, 5, 11, 12])):
             return self.payload.payload.hashret()
         if not conf.checkIPinIP and self.proto in [4, 41]:  # IP, IPv6
             return self.payload.hashret()
@@ -449,8 +456,8 @@ class IP(Packet, IPTools):
             return struct.pack("B", self.proto) + self.payload.hashret()
         if conf.checkIPsrc and conf.checkIPaddr:
             return (strxor(inet_pton(socket.AF_INET, self.src),
-                           inet_pton(socket.AF_INET, self.dst))
-                    + struct.pack("B", self.proto) + self.payload.hashret())
+                           inet_pton(socket.AF_INET, self.dst)) +
+                    struct.pack("B", self.proto) + self.payload.hashret())
         return struct.pack("B", self.proto) + self.payload.hashret()
 
     def answers(self, other):
@@ -534,7 +541,7 @@ def in4_chksum(proto, u, p):
             ihl = 5 + olen // 4 + (1 if olen % 4 else 0)
         else:
             ihl = u.ihl
-        ln = u.len - 4 * ihl
+        ln = max(u.len - 4 * ihl, 0)
     else:
         ln = len(p)
     psdhdr = struct.pack("!4s4sHH",
@@ -631,10 +638,10 @@ class UDP(Packet):
 
     def post_build(self, p, pay):
         p += pay
-        l = self.len
-        if l is None:
-            l = len(p)
-            p = p[:4] + struct.pack("!H", l) + p[6:]
+        tmp_len = self.len
+        if tmp_len is None:
+            tmp_len = len(p)
+            p = p[:4] + struct.pack("!H", tmp_len) + p[6:]
         if self.chksum is None:
             if isinstance(self.underlayer, IP):
                 ck = in4_chksum(socket.IPPROTO_UDP, self.underlayer, p)
@@ -653,8 +660,8 @@ class UDP(Packet):
         return p
 
     def extract_padding(self, s):
-        l = self.len - 8
-        return s[:l], s[l:]
+        tmp_len = self.len - 8
+        return s[:tmp_len], s[tmp_len:]
 
     def hashret(self):
         return self.payload.hashret()
@@ -690,7 +697,19 @@ icmptypes = {0: "echo-reply",
              15: "information-request",
              16: "information-response",
              17: "address-mask-request",
-             18: "address-mask-reply"}
+             18: "address-mask-reply",
+             30: "traceroute",
+             31: "datagram-conversion-error",
+             32: "mobile-host-redirect",
+             33: "ipv6-where-are-you",
+             34: "ipv6-i-am-here",
+             35: "mobile-registration-request",
+             36: "mobile-registration-reply",
+             37: "domain-name-request",
+             38: "domain-name-reply",
+             39: "skip",
+             40: "photuris"}
+
 
 icmpcodes = {3: {0: "network-unreachable",
                     1: "host-unreachable",
@@ -714,7 +733,13 @@ icmpcodes = {3: {0: "network-unreachable",
              11: {0: "ttl-zero-during-transit",
                   1: "ttl-zero-during-reassembly", },
              12: {0: "ip-header-bad",
-                  1: "required-option-missing", }, }
+                  1: "required-option-missing", },
+             40: {0: "bad-spi",
+                  1: "authentication-failed",
+                  2: "decompression-failed",
+                  3: "decryption-failed",
+                  4: "need-authentification",
+                  5: "need-authorization", }, }
 
 
 class ICMP(Packet):
@@ -745,14 +770,14 @@ class ICMP(Packet):
         return p
 
     def hashret(self):
-        if self.type in [0, 8, 13, 14, 15, 16, 17, 18]:
+        if self.type in [0, 8, 13, 14, 15, 16, 17, 18, 33, 34, 35, 36, 37, 38]:
             return struct.pack("HH", self.id, self.seq) + self.payload.hashret()  # noqa: E501
         return self.payload.hashret()
 
     def answers(self, other):
         if not isinstance(other, ICMP):
             return 0
-        if ((other.type, self.type) in [(8, 0), (13, 14), (15, 16), (17, 18)] and  # noqa: E501
+        if ((other.type, self.type) in [(8, 0), (13, 14), (15, 16), (17, 18), (33, 34), (35, 36), (37, 38)] and  # noqa: E501
             self.id == other.id and
                 self.seq == other.seq):
             return 1
@@ -779,9 +804,9 @@ class IPerror(IP):
             return 0
         if not (((conf.checkIPsrc == 0) or (self.dst == other.dst)) and
                 (self.src == other.src) and
-                (((conf.checkIPID == 0)
-                  or (self.id == other.id)
-                  or (conf.checkIPID == 1 and self.id == socket.htons(other.id)))) and  # noqa: E501
+                (((conf.checkIPID == 0) or
+                  (self.id == other.id) or
+                  (conf.checkIPID == 1 and self.id == socket.htons(other.id)))) and  # noqa: E501
                 (self.proto == other.proto)):
             return 0
         return self.payload.answers(other.payload)
@@ -930,22 +955,24 @@ overlap_fragsize: the fragment size of the overlapping packet"""
     return qfrag + fragment(p, fragsize)
 
 
-@conf.commands.register
-def defrag(plist):
-    """defrag(plist) -> ([not fragmented], [defragmented],
-                  [ [bad fragments], [bad fragments], ... ])"""
-    frags = defaultdict(PacketList)
-    nofrag = PacketList()
+def _defrag_logic(plist, complete=False):
+    """Internal function used to defragment a list of packets.
+    It contains the logic behind the defrag() and defragment() functions
+    """
+    frags = defaultdict(lambda: [])
+    final = []
+    pos = 0
     for p in plist:
-        if IP not in p:
-            nofrag.append(p)
-            continue
-        ip = p[IP]
-        if ip.frag == 0 and ip.flags & 1 == 0:
-            nofrag.append(p)
-            continue
-        uniq = (ip.id, ip.src, ip.dst, ip.proto)
-        frags[uniq].append(p)
+        p._defrag_pos = pos
+        pos += 1
+        if IP in p:
+            ip = p[IP]
+            if ip.frag != 0 or ip.flags & 1:
+                uniq = (ip.id, ip.src, ip.dst, ip.proto)
+                frags[uniq].append(p)
+                continue
+        final.append(p)
+
     defrag = []
     missfrag = []
     for lst in six.itervalues(frags):
@@ -982,68 +1009,6 @@ def defrag(plist):
             del(ip.chksum)
             del(ip.len)
             p = p / txt
-            defrag.append(p)
-    defrag2 = PacketList()
-    for p in defrag:
-        defrag2.append(p.__class__(raw(p)))
-    return nofrag, defrag2, missfrag
-
-
-@conf.commands.register
-def defragment(plist):
-    """defrag(plist) -> plist defragmented as much as possible """
-    frags = defaultdict(lambda: [])
-    final = []
-
-    pos = 0
-    for p in plist:
-        p._defrag_pos = pos
-        pos += 1
-        if IP in p:
-            ip = p[IP]
-            if ip.frag != 0 or ip.flags & 1:
-                ip = p[IP]
-                uniq = (ip.id, ip.src, ip.dst, ip.proto)
-                frags[uniq].append(p)
-                continue
-        final.append(p)
-
-    defrag = []
-    missfrag = []
-    for lst in six.itervalues(frags):
-        lst.sort(key=lambda x: x.frag)
-        p = lst[0]
-        lastp = lst[-1]
-        if p.frag > 0 or lastp.flags & 1 != 0:  # first or last fragment missing  # noqa: E501
-            missfrag += lst
-            continue
-        p = p.copy()
-        if conf.padding_layer in p:
-            del(p[conf.padding_layer].underlayer.payload)
-        ip = p[IP]
-        if ip.len is None or ip.ihl is None:
-            clen = len(ip.payload)
-        else:
-            clen = ip.len - (ip.ihl << 2)
-        txt = conf.raw_layer()
-        for q in lst[1:]:
-            if clen != q.frag << 3:  # Wrong fragmentation offset
-                if clen > q.frag << 3:
-                    warning("Fragment overlap (%i > %i) %r || %r ||  %r" % (clen, q.frag << 3, p, txt, q))  # noqa: E501
-                missfrag += lst
-                break
-            if q[IP].len is None or q[IP].ihl is None:
-                clen += len(q[IP].payload)
-            else:
-                clen += q[IP].len - (q[IP].ihl << 2)
-            if conf.padding_layer in q:
-                del(q[conf.padding_layer].underlayer.payload)
-            txt.add_payload(q[IP].payload.copy())
-        else:
-            ip.flags &= ~1  # !MF
-            del(ip.chksum)
-            del(ip.len)
-            p = p / txt
             p._defrag_pos = max(x._defrag_pos for x in lst)
             defrag.append(p)
     defrag2 = []
@@ -1051,18 +1016,30 @@ def defragment(plist):
         q = p.__class__(raw(p))
         q._defrag_pos = p._defrag_pos
         defrag2.append(q)
-    final += defrag2
-    final += missfrag
-    final.sort(key=lambda x: x._defrag_pos)
-    for p in final:
-        del(p._defrag_pos)
-
-    if hasattr(plist, "listname"):
-        name = "Defragmented %s" % plist.listname
+    if complete:
+        final.extend(defrag2)
+        final.extend(missfrag)
+        final.sort(key=lambda x: x._defrag_pos)
+        if hasattr(plist, "listname"):
+            name = "Defragmented %s" % plist.listname
+        else:
+            name = "Defragmented"
+        return PacketList(final, name=name)
     else:
-        name = "Defragmented"
+        return PacketList(final), PacketList(defrag2), PacketList(missfrag)
 
-    return PacketList(final, name=name)
+
+@conf.commands.register
+def defrag(plist):
+    """defrag(plist) -> ([not fragmented], [defragmented],
+                  [ [bad fragments], [bad fragments], ... ])"""
+    return _defrag_logic(plist, complete=False)
+
+
+@conf.commands.register
+def defragment(plist):
+    """defragment(plist) -> plist defragmented as much as possible """
+    return _defrag_logic(plist, complete=True)
 
 
 # Add timeskew_graph() method to PacketList
@@ -1266,8 +1243,8 @@ Touch screen: pinch/extend to zoom, swipe or two-finger rotate."""
 
         for t in rings:
             r = rings[t]
-            l = len(r)
-            for i in range(l):
+            tmp_len = len(r)
+            for i in range(tmp_len):
                 if r[i][1] == -1:
                     col = vpython.vec(0.75, 0.75, 0.75)
                 elif r[i][1]:
@@ -1275,7 +1252,7 @@ Touch screen: pinch/extend to zoom, swipe or two-finger rotate."""
                 else:
                     col = vpython.color.blue
 
-                s = IPsphere(pos=vpython.vec((l - 1) * vpython.cos(2 * i * vpython.pi / l), (l - 1) * vpython.sin(2 * i * vpython.pi / l), 2 * t),  # noqa: E501
+                s = IPsphere(pos=vpython.vec((tmp_len - 1) * vpython.cos(2 * i * vpython.pi / tmp_len), (tmp_len - 1) * vpython.sin(2 * i * vpython.pi / tmp_len), 2 * t),  # noqa: E501
                              ip=r[i][0],
                              color=col)
                 for trlst in six.itervalues(tr3d):
@@ -1348,7 +1325,7 @@ Touch screen: pinch/extend to zoom, swipe or two-finger rotate."""
         # Open & read the GeoListIP2 database
         try:
             db = geoip2.database.Reader(conf.geoip_city)
-        except:
+        except Exception:
             warning("Cannot open geoip2 database at %s", conf.geoip_city)
             return []
 
@@ -1868,7 +1845,7 @@ def fragleak2(target, timeout=0.4, onlyasc=0):
                 if leak not in found:
                     found[leak] = None
                     linehexdump(leak, onlyasc=onlyasc)
-    except:
+    except Exception:
         pass
 
 

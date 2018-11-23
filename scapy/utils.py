@@ -12,12 +12,10 @@ from __future__ import print_function
 import os
 import sys
 import socket
-import types
 import collections
 import random
 import time
 import gzip
-import zlib
 import re
 import struct
 import array
@@ -30,9 +28,10 @@ from scapy.modules.six.moves import range
 from scapy.config import conf
 from scapy.consts import DARWIN, WINDOWS
 from scapy.data import MTU, DLT_EN10MB
-from scapy.compat import *
-from scapy.error import log_runtime, log_loading, log_interactive, Scapy_Exception, warning  # noqa: E501
-from scapy.base_classes import BasePacketList
+from scapy.compat import orb, raw, plain_str, chb, bytes_base64,\
+    base64_bytes, hex_bytes, lambda_tuple_converter
+from scapy.error import log_runtime, Scapy_Exception, warning
+from scapy.pton_ntop import inet_pton
 
 ###########
 #  Tools  #
@@ -89,7 +88,12 @@ def restart():
     if not conf.interactive or not os.path.isfile(sys.argv[0]):
         raise OSError("Scapy was not started from console")
     if WINDOWS:
-        os._exit(subprocess.call([sys.executable] + sys.argv))
+        try:
+            res_code = subprocess.call([sys.executable] + sys.argv)
+        except KeyboardInterrupt:
+            res_code = 1
+        finally:
+            os._exit(res_code)
     os.execv(sys.executable, [sys.executable] + sys.argv)
 
 
@@ -114,12 +118,12 @@ def hexdump(x, dump=False):
     """
     s = ""
     x = raw(x)
-    l = len(x)
+    x_len = len(x)
     i = 0
-    while i < l:
+    while i < x_len:
         s += "%04x  " % i
         for j in range(16):
-            if i + j < l:
+            if i + j < x_len:
                 s += "%02X " % orb(x[i + j])
             else:
                 s += "   "
@@ -226,8 +230,8 @@ def hexdiff(x, y):
 
     dox = 1
     doy = 0
-    l = len(backtrackx)
-    while i < l:
+    btx_len = len(backtrackx)
+    while i < btx_len:
         linex = backtrackx[i:i + 16]
         liney = backtracky[i:i + 16]
         xx = sum(len(k) for k in linex)
@@ -265,7 +269,7 @@ def hexdiff(x, y):
 
         cl = ""
         for j in range(16):
-            if i + j < l:
+            if i + j < btx_len:
                 if line[j]:
                     col = colorize[(linex[j] != liney[j]) * (doy - dox)]
                     print(col("%02X" % orb(line[j])), end=' ')
@@ -430,7 +434,6 @@ else:
     inet_aton = socket.inet_aton
 
 inet_ntoa = socket.inet_ntoa
-from scapy.pton_ntop import *
 
 
 def atol(x):
@@ -538,8 +541,8 @@ class ContextManagerCaptureOutput(object):
     def __init__(self):
         self.result_export_object = ""
         try:
-            import mock
-        except:
+            import mock  # noqa: F401
+        except Exception:
             raise ImportError("The mock module needs to be installed !")
 
     def __enter__(self):
@@ -610,7 +613,7 @@ def do_graph(graph, prog=None, format=None, target=None, type=None, string=None,
     proc.wait()
     try:
         target.close()
-    except:
+    except Exception:
         pass
     if start_viewer:
         # Workaround for file not found error: We wait until tempfile is written.  # noqa: E501
@@ -635,7 +638,6 @@ _TEX_TR = {
     "^": "\\^{}",
     "$": "\\$",
     "#": "\\#",
-    "~": "\\~",
     "_": "\\_",
     "&": "\\&",
     "%": "\\%",
@@ -775,10 +777,10 @@ def load_object(fname):
 def corrupt_bytes(s, p=0.01, n=None):
     """Corrupt a given percentage or number of bytes from a string"""
     s = array.array("B", raw(s))
-    l = len(s)
+    s_len = len(s)
     if n is None:
-        n = max(1, int(l * p))
-    for i in random.sample(range(l), n):
+        n = max(1, int(s_len * p))
+    for i in random.sample(range(s_len), n):
         s[i] = (s[i] + random.randint(1, 255)) % 256
     return s.tostring() if six.PY2 else s.tobytes()
 
@@ -787,10 +789,10 @@ def corrupt_bytes(s, p=0.01, n=None):
 def corrupt_bits(s, p=0.01, n=None):
     """Flip a given percentage or number of bits from a string"""
     s = array.array("B", raw(s))
-    l = len(s) * 8
+    s_len = len(s) * 8
     if n is None:
-        n = max(1, int(l * p))
-    for i in random.sample(range(l), n):
+        n = max(1, int(s_len * p))
+    for i in random.sample(range(s_len), n):
         s[i // 8] ^= 1 << (i % 8)
     return s.tostring() if six.PY2 else s.tobytes()
 
@@ -861,7 +863,7 @@ class PcapReader_metaclass(type):
                     raise
                     try:
                         i.f.seek(-4, 1)
-                    except:
+                    except Exception:
                         pass
                     raise Scapy_Exception("Not a supported capture file")
 
@@ -887,6 +889,7 @@ class PcapReader_metaclass(type):
 class RawPcapReader(six.with_metaclass(PcapReader_metaclass)):
     """A stateful pcap reader. Each packet is returned as a string"""
 
+    read_allowed_exceptions = ()  # emulate SuperSocket
     PacketMetadata = collections.namedtuple("PacketMetadata",
                                             ["sec", "usec", "wirelen", "caplen"])  # noqa: E501
 
@@ -980,6 +983,11 @@ class RawPcapReader(six.with_metaclass(PcapReader_metaclass)):
     def __exit__(self, exc_type, exc_value, tracback):
         self.close()
 
+    # emulate SuperSocket
+    @staticmethod
+    def select(sockets, remain=None):
+        return sockets, None
+
 
 class PcapReader(RawPcapReader):
     def __init__(self, filename, fdesc, magic):
@@ -1000,7 +1008,7 @@ class PcapReader(RawPcapReader):
             p = self.LLcls(s)
         except KeyboardInterrupt:
             raise
-        except:
+        except Exception:
             if conf.debug_dissector:
                 raise
             p = conf.raw_layer(s)
@@ -1054,7 +1062,7 @@ class RawPcapNgReader(RawPcapReader):
             raise Scapy_Exception("Not a pcapng capture file (bad magic)")
         try:
             self.f.seek(0)
-        except:
+        except Exception:
             pass
 
     def read_packet(self, size=MTU):
@@ -1104,8 +1112,8 @@ class RawPcapNgReader(RawPcapReader):
             if length % 4:
                 length += (4 - (length % 4))
             options = options[4 + length:]
-        self.interfaces.append(struct.unpack(self.endian + "HxxI", block[:8])
-                               + (tsresol,))
+        self.interfaces.append(struct.unpack(self.endian + "HxxI", block[:8]) +
+                               (tsresol,))
 
     def read_block_epb(self, block, size):
         """Enhanced Packet Block"""
@@ -1165,7 +1173,7 @@ class PcapNgReader(RawPcapNgReader):
             p = conf.l2types[linktype](s)
         except KeyboardInterrupt:
             raise
-        except:
+        except Exception:
             if conf.debug_dissector:
                 raise
             p = conf.raw_layer(s)
@@ -1252,7 +1260,7 @@ nano:       use nanosecond-precision (requires libpcap >= 1.5.0)
             if not self.header_present:
                 try:
                     p = next(pkt)
-                except StopIteration:
+                except (StopIteration, RuntimeError):
                     self._write_header(None)
                     return
                 self._write_header(p)
@@ -1340,7 +1348,7 @@ def import_hexcap():
                 break
             try:
                 p += re_extract_hexcap.match(line).groups()[2]
-            except:
+            except Exception:
                 warning("Parsing error during hexcap")
                 continue
     except EOFError:
@@ -1461,6 +1469,8 @@ u'64'
             proc.stdin.writelines(iter(lambda: pktlist.read(1048576), b""))
         except AttributeError:
             wrpcap(proc.stdin, pktlist)
+        except UnboundLocalError:
+            raise IOError("%s died unexpectedly !" % prog)
         else:
             proc.stdin.close()
     if dump:
@@ -1515,7 +1525,7 @@ def get_terminal_width():
         if not sizex:
             try:
                 sizex = int(os.environ['COLUMNS'])
-            except:
+            except Exception:
                 pass
         if sizex:
             return sizex
@@ -1523,9 +1533,12 @@ def get_terminal_width():
             return None
 
 
-def pretty_list(rtlst, header, sortBy=0):
+def pretty_list(rtlst, header, sortBy=0, borders=False):
     """Pretty list to fit the terminal, and add header"""
-    _space = "  "
+    if borders:
+        _space = "|"
+    else:
+        _space = "  "
     # Windows has a fat terminal border
     _spacelen = len(_space) * (len(header) - 1) + (10 if WINDOWS else 0)
     _croped = False
@@ -1559,6 +1572,9 @@ def pretty_list(rtlst, header, sortBy=0):
         log_runtime.info("Table cropped to fit the terminal (conf.auto_crop_tables==True)")  # noqa: E501
     # Generate padding scheme
     fmt = _space.join(["%%-%ds" % x for x in colwidth])
+    # Append separation line if needed
+    if borders:
+        rtlst.insert(1, tuple("-" * x for x in colwidth))
     # Compile
     rt = "\n".join(((fmt % x).strip() for x in rtlst))
     return rt
@@ -1574,10 +1590,10 @@ def __make_table(yfmtfunc, fmtfunc, endline, data, fxyz, sortx=None, sorty=None,
     # Python 2 backward compatibility
     fxyz = lambda_tuple_converter(fxyz)
 
-    l = 0
+    tmp_len = 0
     for e in data:
         xx, yy, zz = [str(s) for s in fxyz(*e)]
-        l = max(len(yy), l)
+        tmp_len = max(len(yy), tmp_len)
         vx[xx] = max(vx.get(xx, 0), len(xx), len(zz))
         vy[yy] = None
         vz[(xx, yy)] = zz
@@ -1589,27 +1605,27 @@ def __make_table(yfmtfunc, fmtfunc, endline, data, fxyz, sortx=None, sorty=None,
     else:
         try:
             vxk.sort(key=int)
-        except:
+        except Exception:
             try:
                 vxk.sort(key=atol)
-            except:
+            except Exception:
                 vxk.sort()
     if sorty:
         vyk.sort(key=sorty)
     else:
         try:
             vyk.sort(key=int)
-        except:
+        except Exception:
             try:
                 vyk.sort(key=atol)
-            except:
+            except Exception:
                 vyk.sort()
 
     if seplinefunc:
-        sepline = seplinefunc(l, [vx[x] for x in vxk])
+        sepline = seplinefunc(tmp_len, [vx[x] for x in vxk])
         print(sepline)
 
-    fmt = yfmtfunc(l)
+    fmt = yfmtfunc(tmp_len)
     print(fmt % "", end=' ')
     for x in vxk:
         vxf[x] = fmtfunc(vx[x])
@@ -1649,7 +1665,7 @@ def whois(ip_address):
     whois_ip = str(ip_address)
     try:
         query = socket.gethostbyname(whois_ip)
-    except:
+    except Exception:
         query = whois_ip
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     s.connect(("whois.ripe.net", 43))

@@ -10,19 +10,23 @@ DNS: Domain Name System.
 from __future__ import absolute_import
 import socket
 import struct
+import time
 
 from scapy.config import conf
-from scapy.packet import *
-from scapy.fields import *
-from scapy.compat import *
-from scapy.ansmachine import *
+from scapy.packet import Packet, bind_layers, NoPayload
+from scapy.fields import BitEnumField, BitField, ByteEnumField, ByteField, \
+    ConditionalField, Field, FieldLenField, FlagsField, IntField, \
+    PacketListField, ShortEnumField, ShortField, StrField, StrFixedLenField, \
+    StrLenField
+from scapy.compat import orb, raw, chb
+from scapy.ansmachine import AnsweringMachine
 from scapy.sendrecv import sr1
 from scapy.layers.inet import IP, DestIPField, UDP, TCP
 from scapy.layers.inet6 import DestIP6Field
 from scapy.error import warning, Scapy_Exception
-from functools import reduce
 import scapy.modules.six as six
 from scapy.modules.six.moves import range
+from scapy.pton_ntop import inet_ntop, inet_pton
 
 
 def dns_get_str(s, p, pkt=None, _internal=False):
@@ -405,10 +409,10 @@ class DNS(Packet):
     ]
 
     def answers(self, other):
-        return (isinstance(other, DNS)
-                and self.id == other.id
-                and self.qr == 1
-                and other.qr == 0)
+        return (isinstance(other, DNS) and
+                self.id == other.id and
+                self.qr == 1 and
+                other.qr == 0)
 
     def mysummary(self):
         type = ["Qry", "Ans"][self.qr]
@@ -635,10 +639,11 @@ class _DNSRRdummy(InheritOriginDNSStrPacket):
             return pkt + pay
 
         lrrname = len(self.fields_desc[0].i2m("", self.getfieldval("rrname")))
-        l = len(pkt) - lrrname - 10
-        pkt = pkt[:lrrname + 8] + struct.pack("!H", l) + pkt[lrrname + 8 + 2:]
+        tmp_len = len(pkt) - lrrname - 10
+        tmp_pkt = pkt[:lrrname + 8]
+        pkt = struct.pack("!H", tmp_len) + pkt[lrrname + 8 + 2:]
 
-        return pkt + pay
+        return tmp_pkt + pkt + pay
 
 
 class DNSRRSOA(_DNSRRdummy):
